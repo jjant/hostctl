@@ -387,8 +387,11 @@ pub enum Event {
         desired: StorePath,
         result: DiffResult,
     },
-    /// A problem not tied to one host (e.g. nix can't be run).
+    /// A problem not tied to one host.
     Error(ErrorInfo),
+    /// `nix` or `ssh` can't be run at all: the check couldn't run (exit 3),
+    /// whatever the hosts say. Shown like an [`Event::Error`].
+    Unrunnable(ErrorInfo),
     /// Ctrl-C: work in flight is reported as interrupted.
     Interrupted,
     /// The check started by the last `RunStarted` is complete.
@@ -416,6 +419,9 @@ pub struct AppState {
     pub config_path: Option<PathBuf>,
     /// Problems not tied to a host, newest last.
     pub errors: Vec<ErrorInfo>,
+    /// `nix` or `ssh` couldn't be run ([`Event::Unrunnable`], whose error
+    /// is in `errors` too).
+    pub unrunnable: bool,
     pub interrupted: bool,
 }
 
@@ -529,6 +535,10 @@ impl AppState {
                 }
             }
             Event::Error(error) => self.errors.push(error),
+            Event::Unrunnable(error) => {
+                self.unrunnable = true;
+                self.errors.push(error);
+            }
             Event::Interrupted => {
                 self.interrupted = true;
                 let interrupted = ErrorInfo::msg("interrupted");
@@ -573,10 +583,11 @@ impl AppState {
         s
     }
 
-    /// DESIGN.md exit codes: `130` interrupted; `2` if any host is in
-    /// trouble or pending, a global error occurred or a flake is stale; else
-    /// `1` if any host needs activation; else `0`. (`3`, "couldn't run", is
-    /// decided by the CLI before there is a state.)
+    /// DESIGN.md exit codes: `130` interrupted; `3` ("couldn't run") if
+    /// `nix` or `ssh` couldn't be run at all (the CLI decides the other 3s
+    /// before there is a state); `2` if any host is in trouble or pending,
+    /// a global error occurred or a flake is stale; else `1` if any host
+    /// needs activation; else `0`.
     pub fn exit_code(&self) -> u8 {
         let s = self.summary();
         let stale = self
@@ -585,6 +596,8 @@ impl AppState {
             .any(|f| matches!(f.info.get(), Some(Ok(info)) if info.stale.is_some()));
         if self.interrupted {
             130
+        } else if self.unrunnable {
+            3
         } else if s.trouble > 0 || s.pending > 0 || !self.errors.is_empty() || stale {
             2
         } else if s.outdated > 0 {
@@ -915,6 +928,28 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(ok.exit_code(), 2);
+    }
+
+    #[test]
+    fn a_check_that_could_not_run_exits_3() {
+        let mut s = AppState::new(vec![host("a", "f"), host("b", "f")]);
+        probed(&mut s, 0, Ok(report('a')));
+        evaluated(&mut s, 0, Ok(desired('a')));
+        probed(&mut s, 1, failure(ProbeFailure::Unreachable));
+        let error = ErrorInfo::msg("ssh.command = \"ssh\" could not be run");
+        s.apply(Event::Unrunnable(error.clone()), Instant::now());
+        assert!(s.unrunnable);
+        assert_eq!(s.errors, [error], "shown like any global error");
+        assert_eq!(s.exit_code(), 3, "over trouble");
+        // Whatever the hosts say.
+        let mut s = AppState::new(vec![host("a", "f")]);
+        probed(&mut s, 0, Ok(report('a')));
+        evaluated(&mut s, 0, Ok(desired('a')));
+        s.apply(Event::Unrunnable(ErrorInfo::msg("x")), Instant::now());
+        assert_eq!(s.exit_code(), 3);
+        // An interruption still wins.
+        s.apply(Event::Interrupted, Instant::now());
+        assert_eq!(s.exit_code(), 130);
     }
 
     #[test]

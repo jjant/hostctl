@@ -384,6 +384,32 @@ fn a_nix_that_can_t_be_run_exits_3_before_checking() {
 }
 
 #[test]
+fn a_nix_that_can_t_be_run_while_checking_exits_3() {
+    let w = World::new();
+    w.config("discover = false\ninventory = \"\"\n[hosts.web1]\nkind = \"home-manager\"\n");
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    let nix = w.fake.join("bin/nix").display().to_string();
+    w.raw_config(
+        &std::fs::read_to_string(&w.config_file)
+            .unwrap()
+            .replace(&nix, "/nonexistent/nix"),
+    );
+    let run = w.run(&["status", "--json"]);
+    run.code(3);
+    let report = run.json();
+    assert_eq!(report["hosts"][0]["status"], "eval-failed");
+    assert_eq!(
+        report["errors"],
+        json!([{
+            "summary": "nix.command = \"/nonexistent/nix\" could not be run: No such file or \
+                        directory (os error 2); is Nix installed and on PATH?",
+            "detail": "nix.command = \"/nonexistent/nix\" could not be run: No such file or \
+                       directory (os error 2); is Nix installed and on PATH?",
+        }])
+    );
+}
+
+#[test]
 fn an_ssh_that_can_t_be_run_is_reported_once() {
     let w = World::new();
     w.flake(REV1);
@@ -393,8 +419,8 @@ fn an_ssh_that_can_t_be_run_is_reported_once() {
     let ssh = w.fake.join("bin/ssh").display().to_string();
     w.raw_config(&w.base_config().replace(&ssh, "/nonexistent/ssh"));
     let run = w.run(&["status", "--plain"]);
-    // A global error is trouble, like the hosts it leaves unchecked.
-    run.code(2);
+    // The check couldn't run.
+    run.code(3);
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\

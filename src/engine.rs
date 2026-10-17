@@ -330,8 +330,8 @@ impl Engine {
     ///   cleaned stderr and [`crate::remote::ssh_hint`];
     /// - `ProbeFinished.deployed` comes from [`Cache::deployed_rev`];
     /// - `nix` or `ssh` that can't be spawned at all is reported once as an
-    ///   [`Event::Error`] naming the config key (`nix.command`/`ssh.command`),
-    ///   not per host;
+    ///   [`Event::Unrunnable`] naming the config key
+    ///   (`nix.command`/`ssh.command`), not per host;
     /// - the cache is saved when the check completes.
     ///
     /// Events: `RunStarted`, every `ProbeStarted` (in `hosts` order), every
@@ -541,7 +541,7 @@ impl Engine {
     }
 
     /// [`Self::resolve_flake`] within a check: reports `FlakeFinished`, and
-    /// a nix that can't be run as the check's one [`Event::Error`].
+    /// a nix that can't be run as the check's one [`Event::Unrunnable`].
     async fn resolve_for_check(&self, run: &Run<'_>, url: &str) -> Result<FlakeInfo, ErrorInfo> {
         let result = self.resolve_flake(url).await.map_err(|e| match e {
             ResolveError::Spawn(error) => self.nix_unrunnable(run, &error),
@@ -1190,9 +1190,11 @@ impl<'a> Run<'a> {
         let _ = self.tx.send(event);
     }
 
+    /// `message` as the [`Event::Unrunnable`] of a program that couldn't
+    /// be spawned, unless `reported` says it was already sent.
     fn report_once(&self, reported: &AtomicBool, message: &str) {
         if !reported.swap(true, Ordering::Relaxed) {
-            self.send(Event::Error(ErrorInfo::msg(message)));
+            self.send(Event::Unrunnable(ErrorInfo::msg(message)));
         }
     }
 }
@@ -2033,7 +2035,7 @@ error:
             ] => result.clone(),
             [
                 (_, Event::ProbeStarted(7)),
-                (_, Event::Error(_)),
+                (_, Event::Unrunnable(_)),
                 (_, Event::ProbeFinished { id: 7, result, .. }),
             ] => result.clone(),
             other => panic!("{:?}", lines(other)),
@@ -2135,6 +2137,7 @@ error:
                 Err(e) => format!("diff- {id} error: {}", e.summary),
             },
             Event::Error(e) => format!("error: {}", e.summary),
+            Event::Unrunnable(e) => format!("unrunnable: {}", e.summary),
             Event::Interrupted => "interrupted".into(),
         }
     }
@@ -2861,7 +2864,11 @@ error:
             "{:?}",
             shown(&seen)
         );
-        assert!(!shown(&seen).iter().any(|l| l.starts_with("error")));
+        assert!(
+            !shown(&seen)
+                .iter()
+                .any(|l| l.starts_with("error") || l.starts_with("unrunnable"))
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2891,11 +2898,17 @@ error:
         let errors: Vec<&ErrorInfo> = seen
             .iter()
             .filter_map(|(_, e)| match e {
-                Event::Error(error) => Some(error),
+                Event::Error(error) | Event::Unrunnable(error) => Some(error),
                 _ => None,
             })
             .collect();
         assert_eq!(errors, [&ErrorInfo::msg(message)]);
+        assert!(
+            seen.iter()
+                .any(|(_, e)| matches!(e, Event::Unrunnable(error) if error.summary == message)),
+            "{:?}",
+            lines(&seen)
+        );
         let failed = eval_errors(&seen);
         assert_eq!(failed.len(), 4);
         for (_, error) in &failed {
@@ -3144,7 +3157,7 @@ error:
         assert!(
             shown(&seen)
                 .iter()
-                .any(|l| l.starts_with("error: nix.command")),
+                .any(|l| l.starts_with("unrunnable: nix.command")),
             "{:?}",
             shown(&seen)
         );
@@ -3154,7 +3167,9 @@ error:
         );
         let seen = check(&engine, &hosts, std::slice::from_ref(&info)).await;
         assert!(
-            !shown(&seen).iter().any(|l| l.starts_with("error")),
+            !shown(&seen)
+                .iter()
+                .any(|l| l.starts_with("error") || l.starts_with("unrunnable")),
             "{:?}",
             shown(&seen)
         );
@@ -3451,9 +3466,9 @@ error:
         assert_eq!(
             shown
                 .iter()
-                .filter(|l| l.starts_with("error"))
+                .filter(|l| l.starts_with("error") || l.starts_with("unrunnable"))
                 .collect::<Vec<_>>(),
-            [&format!("error: {message}")]
+            [&format!("unrunnable: {message}")]
         );
         for id in 0..3 {
             assert!(
