@@ -1349,7 +1349,9 @@ fn drift_long(drift: &Drift, now_unix: i64) -> String {
             "staged: the profile already points at the desired generation; a switch or reboot activates it"
                 .into()
         }
-        Drift::Unknown => "unknown generation: not one hostctl has evaluated".into(),
+        Drift::Unknown => "unknown generation: not built from a revision hostctl has checked \
+                           (a local checkout or another branch?)"
+            .into(),
     }
 }
 
@@ -3299,10 +3301,16 @@ mod tests {
                 .any(|l| l.starts_with("drift    same rev, different build: "))
         );
         let bigmem = details("bigmem");
-        assert!(
-            bigmem
-                .iter()
-                .any(|l| l == "drift    unknown generation: not one hostctl has evaluated")
+        let drift = bigmem
+            .iter()
+            .position(|l| l.starts_with("drift "))
+            .expect("a drift line");
+        assert_eq!(
+            bigmem[drift..drift + 2],
+            [
+                "drift    unknown generation: not built from a revision hostctl has checked (a local checkout or ",
+                "         another branch?)",
+            ]
         );
         assert!(
             bigmem
