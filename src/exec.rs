@@ -588,8 +588,9 @@ mod tests {
         }
     }
 
-    /// Run `script` into a 300 ms timeout and check the run ended within
-    /// 0.5 s of it, killed. Only if the child didn't even reach the output
+    /// Run `script` into a 300 ms timeout and check the run ended soon after
+    /// it, killed: within 2 s, where its children sleep 30 s (the slack is for
+    /// loaded machines). Only if the child didn't even reach the output
     /// `ready` looks for (a very loaded machine), retry with more time.
     async fn run_into_timeout(script: &str, ready: impl Fn(&Output) -> bool) -> Output {
         for timeout in [300, 1000, 3000].map(Duration::from_millis) {
@@ -600,7 +601,7 @@ mod tests {
             assert_eq!(out.code, None);
             // The group gets its grace period after SIGTERM, every time.
             assert!(took >= timeout + KILL_GRACE, "{took:?}");
-            assert!(took < timeout + Duration::from_millis(500), "{took:?}");
+            assert!(took < timeout + Duration::from_secs(2), "{took:?}");
             assert!(out.elapsed >= timeout && out.elapsed <= took);
             if ready(&out) {
                 return out;

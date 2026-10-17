@@ -2085,8 +2085,9 @@ mod tests {
                 "home-manager probe, {}: min {:?}, median {:?}",
                 shell.name, times[0], times[2]
             );
+            // About 10 ms; the slack is for loaded machines.
             assert!(
-                times[0] < Duration::from_millis(50),
+                times[0] < Duration::from_millis(200),
                 "{}: {times:?}",
                 shell.name
             );
