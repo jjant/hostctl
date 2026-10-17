@@ -630,11 +630,26 @@ fn is_auth_failure(line: &str) -> bool {
         })
 }
 
+/// How ssh names the other end of a ProxyCommand or ProxyJump, whose
+/// address it doesn't know.
+const UNKNOWN_PEER: &str = "UNKNOWN port 65535";
+
+/// `Connection closed by UNKNOWN port 65535`: ssh's connection through a
+/// ProxyCommand or ProxyJump ended. With ControlPersist that line is all
+/// that is left of a failing proxy's own error (the master has its stderr).
+pub fn is_proxy_closed(line: &str) -> bool {
+    line.trim()
+        .strip_prefix("Connection closed by ")
+        .is_some_and(|peer| peer == UNKNOWN_PEER)
+}
+
 /// Whether an ssh failure is worth one retry: sshd's MaxStartups drops
 /// (`kex_exchange_identification`, `Connection reset by peer`,
 /// `Connection closed by … port …` during key exchange) — unless stderr
 /// also shows a failure a retry can't fix (resolution, authentication,
 /// host keys, configuration, timeouts, refused or unroutable connections).
+/// A proxy's end closing (`… by UNKNOWN port 65535`) is no drop: the proxy
+/// failed, and says why only without multiplexing.
 pub fn is_transient_ssh_failure(stderr: &str) -> bool {
     const PERMANENT: &[&str] = &[
         "Could not resolve hostname",
@@ -655,8 +670,9 @@ pub fn is_transient_ssh_failure(stderr: &str) -> bool {
     stderr.lines().map(str::trim_start).any(|line| {
         // kex_exchange_identification (OpenSSH ≥ 7.9), ssh_exchange_… before.
         line.contains("_exchange_identification: ")
-            || line.contains("Connection reset by ")
-            || (line.starts_with("Connection closed by ") && line.contains(" port "))
+            || (!line.contains(UNKNOWN_PEER)
+                && (line.contains("Connection reset by ")
+                    || (line.starts_with("Connection closed by ") && line.contains(" port "))))
     })
 }
 
@@ -1602,6 +1618,10 @@ Host key verification failed.
     const REFUSED: &str = "ssh: connect to host web1 port 22: Connection refused\n";
     const NO_ROUTE: &str = "ssh: connect to host 10.0.0.9 port 22: No route to host\n";
     const JUMP_DOWN: &str = "ssh: connect to host jump port 22: Connection timed out\nConnection closed by UNKNOWN port 65535\n";
+    /// A failing ProxyCommand/ProxyJump's error, all ControlPersist leaves of it.
+    const PROXY_CLOSED: &str = "Connection closed by UNKNOWN port 65535\r\n";
+    /// sshd's MaxStartups drop, through a ProxyJump.
+    const KEX_VIA_JUMP: &str = "kex_exchange_identification: Connection closed by remote host\r\nConnection closed by UNKNOWN port 65535\r\n";
     const BANNER: &str =
         "Connection timed out during banner exchange\nConnection to 10.0.0.5 port 22 timed out\n";
 
@@ -1680,6 +1700,7 @@ Host key verification failed.
             EXCHANGE_74,
             EXCHANGE_74_CLOSED,
             CLOSED,
+            KEX_VIA_JUMP,
         ] {
             assert!(is_transient_ssh_failure(stderr), "{stderr:?}");
         }
@@ -1701,8 +1722,25 @@ Host key verification failed.
             JUMP_DOWN,
             BANNER,
             "Connection closed by remote host\n",
+            // A proxy that failed: retrying over the same master is no use.
+            PROXY_CLOSED,
+            "Connection reset by UNKNOWN port 65535\n",
         ] {
             assert!(!is_transient_ssh_failure(stderr), "{stderr:?}");
+        }
+    }
+
+    #[test]
+    fn a_proxy_closing_is_recognized() {
+        assert!(is_proxy_closed(PROXY_CLOSED));
+        assert!(is_proxy_closed(" Connection closed by UNKNOWN port 65535"));
+        for line in [
+            CLOSED,
+            "Connection closed by UNKNOWN port 655350",
+            "kex_exchange_identification: Connection closed by remote host",
+            "ssh: connect to host jump port 22: Connection timed out",
+        ] {
+            assert!(!is_proxy_closed(line), "{line:?}");
         }
     }
 

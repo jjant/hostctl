@@ -8,9 +8,11 @@
 #                HOSTCTL_PROBE_ROOT; HOME is root/home, TMPDIR root/tmp)
 #   bin/         commands first on the host's PATH (e.g. the fake nix-store)
 #   unreachable  ssh fails: this text on stderr, exit 255
-#   silent-255   while multiplexed (-o ControlMaster=auto), exit 255 without
-#                a word, the way ControlPersist swallows a ProxyCommand's
-#                error; unmultiplexed runs go on as usual
+#   silent-255   while multiplexed (-o ControlMaster=auto), exit 255 with
+#                this file's text on stderr (usually none), the way
+#                ControlPersist swallows a ProxyCommand's error (or leaves
+#                "Connection closed by UNKNOWN port 65535"); unmultiplexed
+#                runs go on as usual
 #   delay        seconds to wait before running the command
 #   await        wait until this many ssh calls have started (10 s at most):
 #                a rendezvous only parallel callers pass quickly
@@ -43,7 +45,10 @@ if [ ! -d "$H" ]; then
   echo "ssh: Could not resolve hostname $host: Name or service not known" >&2
   finish 255
 fi
-[ -n "$mux" ] && [ -f "$H/silent-255" ] && finish 255
+if [ -n "$mux" ] && [ -f "$H/silent-255" ]; then
+  cat "$H/silent-255" >&2
+  finish 255
+fi
 if [ -f "$H/unreachable" ]; then
   cat "$H/unreachable" >&2
   finish 255

@@ -313,11 +313,14 @@ impl Engine {
     /// - probe classification per DESIGN.md ("Probing"): complete output →
     ///   result whatever the exit code; incomplete → `Failed`; no output and
     ///   spawn error / exit 255 / timeout → `Unreachable`; else `Failed`.
-    ///   Exit 255 with empty stderr over a private master is retried once
-    ///   with [`crate::remote::Mux::Off`] to capture the reason; transient
-    ///   failures ([`crate::remote::is_transient_ssh_failure`]) are retried
-    ///   once after a short jittered delay. Error details name the command
-    ///   ([`CommandSpec::display`]), its cleaned stderr and
+    ///   Exit 255 over a private master with a stderr that says nothing
+    ///   (empty, or only a proxy's `Connection closed by UNKNOWN port
+    ///   65535`) is retried once with [`crate::remote::Mux::Off`] to
+    ///   capture the reason; transient failures
+    ///   ([`crate::remote::is_transient_ssh_failure`]) are retried once
+    ///   after a short jittered delay. Error summaries are the line of
+    ///   stderr that says why (before a proxy's closing line); details name
+    ///   the command ([`CommandSpec::display`]), its cleaned stderr and
     ///   [`crate::remote::ssh_hint`];
     /// - `ProbeFinished.deployed` comes from [`Cache::deployed_rev`];
     /// - `nix` or `ssh` that can't be spawned at all is reported once as an
@@ -985,9 +988,10 @@ impl Engine {
     /// the run opens a new connection, and a run with no output is retried
     /// (each at most once) when ssh rejected `accept-new` (with
     /// [`STRICT_HOST_KEYS`] from then on, for every later run), when it
-    /// exited 255 without a word over the private master (unmultiplexed,
-    /// to capture the reason ControlPersist swallowed), or after a
-    /// transient failure ([`remote::is_transient_ssh_failure`]).
+    /// exited 255 over the private master without saying why
+    /// ([`says_nothing`]; unmultiplexed, to capture the reason
+    /// ControlPersist swallowed), or after a transient failure
+    /// ([`remote::is_transient_ssh_failure`]).
     async fn run_on<T>(
         &self,
         target: &Target,
@@ -1033,7 +1037,7 @@ impl Engine {
                 if silent_retry
                     && matches!(mux, Mux::Private { .. })
                     && out.code == Some(255)
-                    && clean_ssh_stderr(&out.stderr).is_empty()
+                    && says_nothing(&out.stderr)
                 {
                     silent_retry = false;
                     unmultiplexed = true;
@@ -1348,12 +1352,38 @@ fn clean_ssh_stderr(stderr: &str) -> String {
     kept
 }
 
+/// Whether ssh failed without saying why: nothing on stderr (once cleaned)
+/// or only that a proxy's connection closed ([`remote::is_proxy_closed`]),
+/// which is all ControlPersist leaves of a failing ProxyCommand's or
+/// ProxyJump's own error.
+fn says_nothing(stderr: &str) -> bool {
+    clean_ssh_stderr(stderr)
+        .lines()
+        .all(remote::is_proxy_closed)
+}
+
 /// The last non-blank line, trimmed.
 fn last_line(text: &str) -> Option<&str> {
     text.lines()
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
+}
+
+/// The line of a failed run's stderr that says why: the last one, or the
+/// one before it when that is just a proxy's connection closing (which
+/// follows the proxy's own error).
+fn reason_line(stderr: &str) -> Option<&str> {
+    let mut lines = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let last = lines.next()?;
+    match lines.next() {
+        Some(before) if remote::is_proxy_closed(last) => Some(before),
+        _ => Some(last),
+    }
 }
 
 fn timed_out(timeout: Option<Duration>) -> String {
@@ -1363,9 +1393,9 @@ fn timed_out(timeout: Option<Duration>) -> String {
     }
 }
 
-/// Why a run without a usable answer failed: the timeout, else the last
-/// line of its (cleaned) stderr, else its exit status (255 over ssh: ssh's
-/// own failure).
+/// Why a run without a usable answer failed: the timeout, else the line of
+/// its (cleaned) stderr that says why ([`reason_line`]), else its exit
+/// status (255 over ssh: ssh's own failure).
 fn failure_reason(
     out: &Output,
     stderr: &str,
@@ -1375,7 +1405,7 @@ fn failure_reason(
     if out.timed_out {
         return timed_out(timeout);
     }
-    if let Some(line) = last_line(stderr) {
+    if let Some(line) = reason_line(stderr) {
         return line.to_string();
     }
     match (out.code, target) {
@@ -3504,6 +3534,72 @@ error:
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_proxy_failure_the_master_hides_is_retried_without_it() {
+        // All ControlPersist leaves of a failing ProxyJump's error (OpenSSH
+        // 9.9); unmultiplexed, ssh says why.
+        let closed = "Connection closed by UNKNOWN port 65535\r\n";
+        let why = "ssh: Could not resolve hostname jump: Name or service not known\r\n";
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Fake::new();
+        fake.on("probe web1", Reply::exit(255, closed))
+            .on("probe web1", Reply::exit(255, format!("{why}{closed}")));
+        let Some(engine) = multiplexing(&fake, &tmp) else {
+            return;
+        };
+        let error = probe(&engine, &remote("web1")).await.unwrap_err();
+        assert_eq!(
+            (error.kind, error.error.summary.as_str()),
+            (
+                ProbeFailure::Unreachable,
+                "ssh: Could not resolve hostname jump: Name or service not known"
+            )
+        );
+        assert!(
+            error.error.detail.ends_with(&format!(
+                "\n{}{}\nhint: jump doesn't resolve: set the host's destination \
+                 (e.g. user@jump.example.com) or give it a Host entry in ~/.ssh/config",
+                why.replace('\r', ""),
+                closed.trim_end()
+            )),
+            "{}",
+            error.error.detail
+        );
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].has("ControlMaster=auto") && !calls[0].has("ControlPath=none"));
+        assert!(calls[1].has("ControlMaster=no") && calls[1].has("ControlPath=none"));
+        assert_eq!(calls[1].start, calls[0].end.unwrap(), "at once");
+
+        // A MaxStartups drop behind a ProxyJump is still worth a retry
+        // over the master.
+        let kex =
+            format!("kex_exchange_identification: Connection closed by remote host\r\n{closed}");
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Fake::new();
+        fake.on("probe web1", Reply::exit(255, kex))
+            .on("probe web1", running(&sp('a', "gen")));
+        let Some(engine) = multiplexing(&fake, &tmp) else {
+            return;
+        };
+        assert!(probe(&engine, &remote("web1")).await.is_ok());
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[1].has("ControlMaster=auto"), "{calls:?}");
+        assert!(calls[1].start >= calls[0].end.unwrap() + RETRY_DELAY_MS.0);
+
+        // Without a master, what ssh says comes first.
+        let fake = Fake::new();
+        fake.on(
+            "probe web1",
+            Reply::exit(255, format!("proxy: no route to the jump host\r\n{closed}")),
+        );
+        let engine = self::engine(&config(), Cache::in_memory(), &fake);
+        let error = probe(&engine, &remote("web1")).await.unwrap_err();
+        assert_eq!(error.error.summary, "proxy: no route to the jump host");
+        assert_eq!(fake.calls().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn the_control_directory_is_made_private_on_first_remote_use() {
         let tmp = tempfile::tempdir().unwrap();
         let fake = Fake::new();
@@ -4188,6 +4284,26 @@ error:
         assert_eq!(clean_ssh_stderr(""), "");
         assert_eq!(last_line("a\n b \n\n"), Some("b"));
         assert_eq!(last_line(" \n"), None);
+    }
+
+    #[test]
+    fn a_proxy_closing_says_nothing() {
+        let closed = "Connection closed by UNKNOWN port 65535";
+        assert_eq!(
+            reason_line(&format!("proxy: no route\n{closed}\n")),
+            Some("proxy: no route")
+        );
+        assert_eq!(reason_line(&format!("{closed}\n")), Some(closed));
+        assert_eq!(reason_line("a\n b \n\n"), Some("b"));
+        assert_eq!(reason_line(" \n"), None);
+        let banner = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n";
+        for nothing in ["", "\r\n", banner, &format!("{banner}{closed}\r\n")] {
+            assert!(says_nothing(nothing), "{nothing:?}");
+        }
+        let kex = "kex_exchange_identification: Connection closed by remote host";
+        for something in [&format!("{kex}\r\n{closed}\r\n"), "proxy: no route\n"] {
+            assert!(!says_nothing(something), "{something:?}");
+        }
     }
 
     #[test]

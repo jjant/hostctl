@@ -1264,6 +1264,55 @@ fn a_silent_ssh_failure_is_retried_without_multiplexing() {
 }
 
 #[test]
+fn a_proxy_failure_the_master_hides_is_retried_without_multiplexing() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1"]);
+    let host = home_host(&w, "web1", &hm('a'), &hm('a'));
+    // What OpenSSH 9.9 says when its ProxyJump host doesn't resolve; with
+    // ControlPersist, only the last line is left.
+    let closed = "Connection closed by UNKNOWN port 65535";
+    std::fs::write(host.dir.join("silent-255"), format!("{closed}\r\n")).unwrap();
+    host.unreachable(&format!(
+        "ssh: Could not resolve hostname jump: Name or service not known\r\n{closed}\r"
+    ));
+    let run = w.run(&["status", "--plain"]);
+    run.code(2);
+    assert!(
+        run.stdout.contains(
+            "\n  web1  ? unreachable  ssh: Could not resolve hostname jump: Name or service not known\n"
+        ),
+        "the reason the retry captured: {run}"
+    );
+    let calls = w.ssh_calls("web1");
+    assert_eq!(calls.len(), 2, "{}", w.log());
+    assert!(
+        calls[0]
+            .args
+            .contains(" -o ControlMaster=auto -o ControlPath="),
+        "{}",
+        calls[0].args
+    );
+    assert!(
+        calls[1]
+            .args
+            .contains(" -o ControlMaster=no -o ControlPath=none -o ControlPersist=no "),
+        "{}",
+        calls[1].args
+    );
+    let json = w.run(&["status", "--json"]).json();
+    let detail = json["hosts"][0]["error"]["detail"].as_str().unwrap();
+    assert!(
+        detail.ends_with(&format!(
+            "\nssh: Could not resolve hostname jump: Name or service not known\n{closed}\n\
+             hint: jump doesn't resolve: set the host's destination (e.g. user@jump.example.com) \
+             or give it a Host entry in ~/.ssh/config"
+        )),
+        "{detail}"
+    );
+}
+
+#[test]
 fn ssh_options_come_first_and_win() {
     let w = World::new();
     w.flake(REV1);
