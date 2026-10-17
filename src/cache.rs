@@ -5,10 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::fs::{DirBuilder, File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -250,9 +250,10 @@ impl Cache {
     /// `used`; newer `resolvedAt` wins; hints: ours win — those recorded since
     /// the last save), keep the [`MAX_ENTRIES`] most recently used flake
     /// entries, write a unique temp file (mode 0600) in the same directory
-    /// and rename it over (creating the directory, mode 0700). Afterwards the
-    /// cache holds the merged data. No-op when nothing changed or the cache
-    /// is memory-only. Blocking file IO: keep it off async worker threads.
+    /// and rename it over. The directory is hostctl's: created, or made,
+    /// mode 0700. Afterwards the cache holds the merged data. No-op when
+    /// nothing changed or the cache is memory-only. Blocking file IO: keep
+    /// it off async worker threads.
     pub fn save(&mut self) -> io::Result<()> {
         if !self.dirty {
             return Ok(());
@@ -264,11 +265,14 @@ impl Cache {
     }
 
     fn save_to(&mut self, path: &Path, lock_timeout: Duration) -> io::Result<()> {
-        let dir = match path.parent() {
-            Some(dir) if !dir.as_os_str().is_empty() => dir,
-            _ => Path::new("."),
-        };
+        let parent = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+        let dir = parent.unwrap_or(Path::new("."));
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        // hostctl's own directory: private, even if something else made it
+        // (the current directory of a bare file name is left alone).
+        if parent.is_some() {
+            let _ = std::fs::set_permissions(dir, Permissions::from_mode(0o700));
+        }
         let _lock = lock(&path.with_extension("lock"), lock_timeout)?;
         if let Some(disk) = read_file(path, MAX_FILE_BYTES) {
             merge(&mut self.data, disk, &self.touched_hints);
@@ -948,6 +952,20 @@ mod tests {
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(&dir.join("cache.lock")), 0o600);
         assert_eq!(mode(dir), 0o700);
+    }
+
+    #[test]
+    fn saving_makes_an_existing_directory_private() {
+        let (_dir, path) = temp_cache();
+        let dir = path.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::set_permissions(dir, Permissions::from_mode(0o755)).unwrap();
+        let mut cache = Cache::open(path.clone());
+        let a = info("f", "1", 1);
+        cache.record_out_path(&key(&a), &a, "x", &out('a'), 1);
+        cache.save().unwrap();
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[test]
