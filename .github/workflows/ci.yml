@@ -21,4 +21,6 @@ jobs:
         with:
           kvm: true # for the NixOS VM test (checks.x86_64-linux.vm)
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false # the GitHub Actions cache only
       - run: nix flake check -L
