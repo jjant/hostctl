@@ -385,13 +385,24 @@ pub fn now_unix() -> i64 {
 }
 
 /// Make untrusted text (remote output, names from a flake) safe to print:
-/// C0 controls other than `\t` and `\n`, DEL, C1 controls and Unicode bidi
-/// overrides/isolates are replaced by their `\u{…}` escape, so they can't move
-/// the cursor, retitle the terminal or write the clipboard.
+/// C0 controls other than `\t` and `\n`, DEL, C1 controls, Unicode bidi
+/// controls (marks, embeddings, overrides, isolates) and the line and
+/// paragraph separators are replaced by their `\u{…}` escape, so they can't
+/// move the cursor, retitle the terminal, write the clipboard, reorder what
+/// is shown or break a line.
 pub fn sanitize_terminal(s: &str) -> Cow<'_, str> {
     fn unsafe_char(c: char) -> bool {
         (c.is_control() && c != '\t' && c != '\n')
-            || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}')
+            || matches!(
+                c,
+                '\u{061C}'
+                    | '\u{200E}'
+                    | '\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+            )
     }
     if !s.chars().any(unsafe_char) {
         return Cow::Borrowed(s);
@@ -618,6 +629,25 @@ mod tests {
         );
         assert_eq!(sanitize_terminal("x\u{202e}y"), "x\\u{202e}y");
         assert_eq!(sanitize_terminal("ünïcödé ✓"), "ünïcödé ✓");
+        // Every bidi control (Unicode's Bidi_Control), and the line and
+        // paragraph separators, which break a line where none should be.
+        for c in [
+            '\u{61c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{2028}', '\u{2029}',
+        ] {
+            let escaped = format!("a\\u{{{:x}}}b", u32::from(c));
+            assert_eq!(sanitize_terminal(&format!("a{c}b")), escaped, "{c:?}");
+        }
+        // Their neighbours are ordinary text.
+        for c in [
+            '\u{61b}', '\u{61d}', '\u{200d}', '\u{2027}', '\u{202f}', '\u{206a}',
+        ] {
+            assert_eq!(
+                sanitize_terminal(&format!("a{c}b")),
+                format!("a{c}b"),
+                "{c:?}"
+            );
+        }
     }
 
     #[test]
