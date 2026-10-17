@@ -344,12 +344,14 @@ impl Setup {
     fn load(global: &GlobalArgs) -> Result<Setup, Exit> {
         let (mut config, path) =
             Config::load(global.config.as_deref()).map_err(|e| Exit::Usage(format!("{e:#}")))?;
-        config.apply(&Overrides {
-            flake: global.flake.clone(),
-            jobs: global.jobs,
-            self_host: global.self_host.clone(),
-            no_cache: global.no_cache,
-        });
+        config
+            .apply(&Overrides {
+                flake: global.flake.clone(),
+                jobs: global.jobs,
+                self_host: global.self_host.clone(),
+                no_cache: global.no_cache,
+            })
+            .map_err(|e| Exit::Usage(format!("{e:#}")))?;
         if config.flake.is_none() {
             config.flake = flake_here(std::env::current_dir().ok().as_deref());
         }

@@ -505,9 +505,16 @@ impl Config {
 
     /// Apply CLI overrides (they win over the file). Empty strings and
     /// `jobs = 0` count as not given: clap passes empty `$HOSTCTL_FLAKE` /
-    /// `$HOSTCTL_SELF` values through.
-    pub fn apply(&mut self, overrides: &Overrides) {
+    /// `$HOSTCTL_SELF` values through. A flake is checked like the file's
+    /// (see [`validate`](Self::validate)); on error nothing is applied.
+    pub fn apply(&mut self, overrides: &Overrides) -> anyhow::Result<()> {
         let given = |value: &Option<String>| value.as_ref().filter(|v| !v.is_empty()).cloned();
+        if let Some(problem) = given(&overrides.flake)
+            .as_deref()
+            .and_then(|flake| dash_flake("--flake (or $HOSTCTL_FLAKE)", flake))
+        {
+            anyhow::bail!(problem);
+        }
         if let Some(flake) = given(&overrides.flake) {
             self.flake = Some(flake);
         }
@@ -520,6 +527,7 @@ impl Config {
         if overrides.no_cache {
             self.cache = false;
         }
+        Ok(())
     }
 
     /// Semantic checks beyond the schema, with messages naming the host and
@@ -530,10 +538,12 @@ impl Config {
     ///   non-empty;
     /// - every host and `[defaults]`: non-empty name; non-empty
     ///   `destination`/`flake`/`attr`/`probe` when set; `attr` without a
-    ///   leading `.`/`#`; `activate = true` is an error (only `false` or a
-    ///   command); `profile` absolute or `~/…`; `destination` parses
-    ///   ([`crate::remote::parse_destination`], after `{name}` substitution:
-    ///   the table's name, or `name` for `[defaults]`);
+    ///   leading `.`/`#`; no `flake` (the top-level one either) starting
+    ///   with `-`, which nix would read as an option; `activate = true` is
+    ///   an error (only `false` or a command); `profile` absolute or `~/…`;
+    ///   `destination` parses ([`crate::remote::parse_destination`], after
+    ///   `{name}` substitution: the table's name, or `name` for
+    ///   `[defaults]`);
     /// - `kind = "custom"` needs `attr` and `profile` (unless `probe` is
     ///   set), counting what `[defaults]` provides.
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -552,6 +562,9 @@ impl Config {
         }
         if self.flake.as_deref() == Some("") {
             problems.push("flake must not be empty".into());
+        }
+        if let Some(problem) = self.flake.as_deref().and_then(|f| dash_flake("flake", f)) {
+            problems.push(problem);
         }
         if self.self_host.as_deref() == Some("") {
             problems.push("self must not be empty".into());
@@ -977,6 +990,10 @@ fn check_fields(problems: &mut Problems, label: &str, host: &HostConfig) {
             problems.push(format!("{label}: {field} must not be empty"));
         }
     }
+    let what = format!("{label}: flake");
+    if let Some(problem) = host.flake.as_deref().and_then(|f| dash_flake(&what, f)) {
+        problems.push(problem);
+    }
     if let Some(attr) = host.attr.as_deref().filter(|a| a.starts_with(['.', '#'])) {
         problems.push(format!(
             "{label}: attr {attr:?} must not start with '.' or '#' (it is always absolute)"
@@ -993,6 +1010,15 @@ fn check_fields(problems: &mut Problems, label: &str, host: &HostConfig) {
             "{label}: profile {profile:?} must be absolute or start with ~/"
         ));
     }
+}
+
+/// The problem with a flake reference `what` (`flake`, `host "web1":
+/// flake`, …) that starts with `-`: nix would read it as an option (e.g.
+/// `--impure`), like ssh would a destination.
+fn dash_flake(what: &str, flake: &str) -> Option<String> {
+    flake.starts_with('-').then(|| {
+        format!("{what} {flake:?} must not start with '-' (nix would read it as an option)")
+    })
 }
 
 /// `destination`, when set and non-empty, must parse once `{name}` is
@@ -1721,14 +1747,16 @@ mod tests {
     fn overrides_win_over_the_file() {
         let file = "flake = \"github:jjant/nix-config\"\njobs = 4\nself = \"bigmem\"\n";
         let mut config = parse(file);
-        config.apply(&Overrides::default());
+        config.apply(&Overrides::default()).unwrap();
         assert_eq!(config, parse(file));
-        config.apply(&Overrides {
-            flake: Some("path:/src/nix-config".into()),
-            jobs: Some(2),
-            self_host: Some("mac-m1".into()),
-            no_cache: true,
-        });
+        config
+            .apply(&Overrides {
+                flake: Some("path:/src/nix-config".into()),
+                jobs: Some(2),
+                self_host: Some("mac-m1".into()),
+                no_cache: true,
+            })
+            .unwrap();
         let applied = config.clone();
         assert_eq!(applied.flake.as_deref(), Some("path:/src/nix-config"));
         assert_eq!((applied.jobs, applied.jobs()), (Some(2), 2));
@@ -1736,13 +1764,34 @@ mod tests {
         assert!(!applied.cache);
         // Empty values (an exported but empty $HOSTCTL_FLAKE) and `-j 0`
         // count as not given; `no_cache: false` doesn't turn the cache on.
-        config.apply(&Overrides {
-            flake: Some(String::new()),
-            jobs: Some(0),
-            self_host: Some(String::new()),
-            no_cache: false,
-        });
+        config
+            .apply(&Overrides {
+                flake: Some(String::new()),
+                jobs: Some(0),
+                self_host: Some(String::new()),
+                no_cache: false,
+            })
+            .unwrap();
         assert_eq!(config, applied);
+    }
+
+    #[test]
+    fn overrides_are_checked_like_the_file() {
+        let file = "flake = \"github:jjant/nix-config\"\n";
+        let mut config = parse(file);
+        let error = config
+            .apply(&Overrides {
+                flake: Some("--impure".into()),
+                jobs: Some(2),
+                ..Overrides::default()
+            })
+            .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "--flake (or $HOSTCTL_FLAKE) \"--impure\" must not start with '-' \
+             (nix would read it as an option)"
+        );
+        assert_eq!(config, parse(file), "nothing is applied");
     }
 
     #[test]
@@ -1773,6 +1822,10 @@ mod tests {
             ("[nix]\ncommand = \"\"", "nix.command must not be empty"),
             ("[ssh]\ncommand = \"\"", "ssh.command must not be empty"),
             ("flake = \"\"", "flake must not be empty"),
+            (
+                "flake = \"--impure\"",
+                "flake \"--impure\" must not start with '-' (nix would read it as an option)",
+            ),
             ("self = \"\"", "self must not be empty"),
             (
                 "exclude = [\"*-iso\", \"\"]",
@@ -1796,6 +1849,10 @@ mod tests {
                 "host \"web1\": destination must not be empty",
             ),
             ("flake = \"\"", "host \"web1\": flake must not be empty"),
+            (
+                "flake = \"-L\"",
+                "host \"web1\": flake \"-L\" must not start with '-' (nix would read it as an option)",
+            ),
             ("attr = \"\"", "host \"web1\": attr must not be empty"),
             ("probe = \"\"", "host \"web1\": probe must not be empty"),
             (
@@ -1863,6 +1920,10 @@ mod tests {
             (
                 "profile = \"relative\"",
                 "[defaults]: profile \"relative\" must be absolute or start with ~/",
+            ),
+            (
+                "flake = \"--impure\"",
+                "[defaults]: flake \"--impure\" must not start with '-' (nix would read it as an option)",
             ),
         ];
         for (line, want) in cases {
@@ -2427,14 +2488,23 @@ mod tests {
                 ..HostConfig::default()
             },
         );
+        flake_hosts.inventory.insert(
+            "web3".into(),
+            HostConfig {
+                kind: Some(Kind::Nixos),
+                flake: Some("--impure".into()),
+                ..HostConfig::default()
+            },
+        );
         assert_eq!(
             resolve_error(&parse("flake = \"f\""), Some(&flake_hosts), &elsewhere()),
-            "5 problems:\n  \
+            "6 problems:\n  \
              host \"web1\": activate = true is not valid; set a command, or false to disable activation\n  \
              host \"web1\": profile \"relative/profile\" must be absolute or start with ~/\n  \
              host \"web1\": invalid ssh destination \"-oProxyCommand=evil\": starts with '-'\n  \
              host \"web2\": kind = \"custom\" needs attr\n  \
-             host \"web2\": kind = \"custom\" needs profile (or probe)"
+             host \"web2\": kind = \"custom\" needs profile (or probe)\n  \
+             host \"web3\": flake \"--impure\" must not start with '-' (nix would read it as an option)"
         );
     }
 
