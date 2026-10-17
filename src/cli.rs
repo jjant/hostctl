@@ -16,7 +16,7 @@ use crate::actions::{self, Activation, RunsOn};
 use crate::cache::Cache;
 use crate::config::{Config, Host, Overrides, Resolved};
 use crate::engine::{Engine, Freshness};
-use crate::live::{self, Display, Sig, Signals};
+use crate::live::{self, Display, Received, Sig, Signals};
 use crate::local::LocalInfo;
 use crate::model::{AppState, DiffOutcome, DiffResult, ErrorInfo, HostId, HostState, Status};
 use crate::nix::FlakeInfo;
@@ -1366,34 +1366,51 @@ fn exit_status_text(status: &ExitStatus) -> String {
 /// Ask `question` on the terminal (whatever stdin and stdout are); a
 /// signal while waiting interrupts.
 async fn confirm(question: String, signals: &mut Signals) -> Result<bool, Exit> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
     // Reading a terminal blocks: a thread of its own, which the exit
     // doesn't wait for if the answer never comes.
+    let asked = question.clone();
     std::thread::Builder::new()
         .name("hostctl-confirm".into())
         .spawn(move || {
-            let _ = tx.send(ask(&question));
+            let _ = tx.send(ask(&asked));
         })
         .map_err(|e| Exit::Trouble(format!("can't ask for confirmation: {e}")))?;
-    tokio::select! {
-        answer = rx => match answer {
-            Ok(Ok(yes)) => Ok(yes),
-            Ok(Err(e)) => Err(Exit::Usage(format!(
-                "can't ask for confirmation ({e}): pass --yes to activate without asking"
-            ))),
-            Err(_) => Err(Exit::Trouble("the confirmation prompt went away".into())),
-        },
-        _ = signals.recv() => {
-            eprint("\n");
-            Err(Exit::Interrupted)
+    loop {
+        tokio::select! {
+            answer = &mut rx => return match answer {
+                Ok(Ok(yes)) => Ok(yes),
+                Ok(Err(e)) => Err(Exit::Usage(format!(
+                    "can't ask for confirmation ({e}): pass --yes to activate without asking"
+                ))),
+                Err(_) => Err(Exit::Trouble("the confirmation prompt went away".into())),
+            },
+            received = signals.recv_all() => match received {
+                // Ctrl-Z: the shell has had the terminal since; ask again.
+                Received::Suspend => {
+                    live::stop();
+                    if let Ok(tty) = File::options().write(true).open("/dev/tty") {
+                        let _ = (&tty).write_all(prompt(&question).as_bytes());
+                    }
+                }
+                Received::Sig(_) => {
+                    eprint("\n");
+                    return Err(Exit::Interrupted);
+                }
+            },
         }
     }
 }
 
-/// `question [y/N] ` on `/dev/tty`, and the answer read from it.
+/// `question [y/N] `.
+fn prompt(question: &str) -> String {
+    format!("{question} [y/N] ")
+}
+
+/// [`prompt`] on `/dev/tty`, and the answer read from it.
 fn ask(question: &str) -> io::Result<bool> {
     let tty = File::options().read(true).write(true).open("/dev/tty")?;
-    (&tty).write_all(format!("{question} [y/N] ").as_bytes())?;
+    (&tty).write_all(prompt(question).as_bytes())?;
     let mut answer = String::new();
     io::BufReader::new(&tty).read_line(&mut answer)?;
     if answer.is_empty() {

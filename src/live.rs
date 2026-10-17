@@ -80,19 +80,16 @@ pub(crate) async fn check(
     display: Display,
     signals: &mut Signals,
 ) -> anyhow::Result<AppState> {
-    let mut term = Stdio::detect();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let ended = {
+        let mut term = Stdio::detect();
         let table = matches!(display, Display::Table(_)) && term.out_size().is_some();
         let progress = !table && term.err_size().is_some();
-        // Typed keys would move the cursor under lines redrawn in place.
-        let _echo = (table || progress).then(EchoOff::new).flatten();
-        let _cursor = (table || progress).then(|| CursorHidden::new(!table));
+        if table || progress {
+            term.quiet(!table);
+        }
         let check = engine.check(hosts, known, &tx);
-        let interrupt = async {
-            signals.recv().await;
-        };
-        drive(&mut term, display, check, &mut rx, interrupt, &mut state).await
+        drive(&mut term, display, check, &mut rx, signals, &mut state).await
     };
     if ended.as_ref().is_ok_and(|e| *e == Ended::Finished) {
         // The engine saved it when the check completed.
@@ -109,14 +106,15 @@ pub(crate) async fn save_cache(engine: &Engine) {
     let _ = tokio::task::spawn_blocking(move || engine.save_cache()).await;
 }
 
-/// SIGINT, SIGQUIT, SIGTERM and SIGHUP as one stream. Creating it installs
-/// hostctl's handlers (for the rest of the process' life), so the first
-/// one must exist before any [`crate::exec::run_interactive`].
+/// SIGINT, SIGQUIT, SIGTERM, SIGHUP and SIGTSTP as one stream. Creating it
+/// installs hostctl's handlers (for the rest of the process' life), so the
+/// first one must exist before any [`crate::exec::run_interactive`].
 pub(crate) struct Signals {
     interrupt: Signal,
     quit: Signal,
     terminate: Signal,
     hangup: Signal,
+    suspend: Signal,
 }
 
 impl Signals {
@@ -127,19 +125,35 @@ impl Signals {
             quit: signal(SignalKind::quit())?,
             terminate: signal(SignalKind::terminate())?,
             hangup: signal(SignalKind::hangup())?,
+            suspend: signal(SignalKind::from_raw(libc::SIGTSTP))?,
         })
     }
 
-    /// The next of them (pending forever once the runtime shuts down).
+    /// The next of them but SIGTSTP (pending forever once the runtime shuts
+    /// down), which [`stop`]s hostctl as its default action would: for
+    /// waits with nothing of hostctl's on the terminal to give back.
     /// SIGQUIT (Ctrl-\) is an interrupt like SIGINT: its default action
     /// would dump core, with the terminal as hostctl left it and the
     /// children still running.
     pub(crate) async fn recv(&mut self) -> Sig {
+        loop {
+            match self.recv_all().await {
+                Received::Suspend => stop(),
+                Received::Sig(sig) => return sig,
+            }
+        }
+    }
+
+    /// The next of them, SIGTSTP ([`Received::Suspend`]) included: whoever
+    /// gets that puts the terminal back as it was, [`stop`]s, and takes it
+    /// again.
+    pub(crate) async fn recv_all(&mut self) -> Received {
         tokio::select! {
-            Some(()) = self.interrupt.recv() => Sig::Interrupt,
-            Some(()) = self.quit.recv() => Sig::Interrupt,
-            Some(()) = self.terminate.recv() => Sig::Terminate,
-            Some(()) = self.hangup.recv() => Sig::Hangup,
+            Some(()) = self.interrupt.recv() => Received::Sig(Sig::Interrupt),
+            Some(()) = self.quit.recv() => Received::Sig(Sig::Interrupt),
+            Some(()) = self.terminate.recv() => Received::Sig(Sig::Terminate),
+            Some(()) = self.hangup.recv() => Received::Sig(Sig::Hangup),
+            Some(()) = self.suspend.recv() => Received::Suspend,
             else => std::future::pending().await,
         }
     }
@@ -156,18 +170,55 @@ pub(crate) enum Sig {
     Hangup,
 }
 
+/// What [`Signals::recv_all`] got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Received {
+    Sig(Sig),
+    /// SIGTSTP (Ctrl-Z): stop until continued (`fg`).
+    Suspend,
+}
+
+/// Stop hostctl the way SIGTSTP's default action does (so the shell reports
+/// a suspended job; nothing happens in an orphaned process group), until
+/// it is continued. hostctl's own handler is back afterwards.
+pub(crate) fn stop() {
+    // SAFETY: all-zero is a valid sigaction (SIG_DFL, empty mask, no flags);
+    // sigaction and raise are plain calls with valid arguments.
+    unsafe {
+        let default: libc::sigaction = std::mem::zeroed();
+        let mut handler: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGTSTP, &default, &mut handler) != 0 {
+            return;
+        }
+        libc::raise(libc::SIGTSTP);
+        libc::sigaction(libc::SIGTSTP, &handler, std::ptr::null_mut());
+    }
+}
+
 /// Await `work`, showing `label` and a spinner on stderr if it takes more
 /// than a moment (and stderr is a terminal). `None` when one of `signals`
-/// arrived first; `work` is then dropped, which cancels it.
+/// arrived first; `work` is then dropped, which cancels it. Ctrl-Z takes
+/// the spinner off the line while hostctl is stopped.
 pub(crate) async fn wait_for<F: Future>(
     label: &str,
     work: F,
     signals: &mut Signals,
 ) -> Option<F::Output> {
+    let spin = drawable(&io::stderr());
     let interrupt = async {
-        signals.recv().await;
+        loop {
+            match signals.recv_all().await {
+                Received::Suspend => {
+                    if spin {
+                        let _ = write_err("\r\x1b[K");
+                    }
+                    stop();
+                }
+                _ => return,
+            }
+        }
     };
-    wait_until(label, work, interrupt, drawable(&io::stderr())).await
+    wait_until(label, work, interrupt, spin).await
 }
 
 /// [`wait_for`] with any `interrupt`; the spinner only with `spin`.
@@ -264,12 +315,30 @@ trait Term {
     fn err_size(&self) -> Option<(usize, usize)>;
     fn out(&mut self, text: &str) -> io::Result<()>;
     fn err(&mut self, text: &str) -> io::Result<()>;
+    /// Ctrl-Z: give the terminal back as it was (echo, cursor), [`stop`],
+    /// and once continued take it again.
+    fn suspend(&mut self);
+}
+
+/// Where [`drive`] gets its signals: [`Signals`], or a script.
+trait SignalSource {
+    /// The next one, SIGTSTP included ([`Signals::recv_all`]).
+    async fn recv_all(&mut self) -> Received;
+}
+
+impl SignalSource for Signals {
+    async fn recv_all(&mut self) -> Received {
+        Signals::recv_all(self).await
+    }
 }
 
 /// The real stdout and stderr.
 struct Stdio {
     out_tty: bool,
     err_tty: bool,
+    /// While drawing: echo off, and the cursor hidden on stdout (or on
+    /// stderr, `true`).
+    quiet: Option<(Option<EchoOff>, CursorHidden)>,
 }
 
 impl Stdio {
@@ -277,7 +346,15 @@ impl Stdio {
         Stdio {
             out_tty: drawable(&io::stdout()),
             err_tty: drawable(&io::stderr()),
+            quiet: None,
         }
+    }
+
+    /// Echo off (typed keys would move the cursor under lines redrawn in
+    /// place) and the cursor hidden on stdout, or with `stderr` on stderr,
+    /// until this is dropped.
+    fn quiet(&mut self, stderr: bool) {
+        self.quiet = Some((EchoOff::new(), CursorHidden::new(stderr)));
     }
 }
 
@@ -311,23 +388,35 @@ impl Term for Stdio {
     fn err(&mut self, text: &str) -> io::Result<()> {
         write_err(text)
     }
+
+    fn suspend(&mut self) {
+        // Dropping them puts back echo and the cursor.
+        let stderr = self.quiet.take().map(|(_, cursor)| cursor.stderr);
+        stop();
+        // Continued: the settings the terminal has now are the ones to keep.
+        if let Some(stderr) = stderr {
+            self.quiet(stderr);
+        }
+    }
 }
 
-/// Run `check` (whose events arrive on `rx`) to completion or until
-/// `interrupt`, keeping `term` up to date with `state` per `display`. On an
+/// Run `check` (whose events arrive on `rx`) to completion or until one of
+/// `signals`, keeping `term` up to date with `state` per `display`. On an
 /// interrupt, events already sent are applied before
 /// [`Event::Interrupted`]. Ends with the final table ([`Display::Table`])
-/// or with the progress line cleared.
+/// or with the progress line cleared. Ctrl-Z ([`Received::Suspend`]) takes the
+/// progress line off, gives the terminal back and stops; once continued,
+/// the next frame is drawn afresh where the cursor is (the shell wrote
+/// below the last one).
 async fn drive<T: Term>(
     term: &mut T,
     display: Display,
     check: impl Future<Output = ()>,
     rx: &mut UnboundedReceiver<Event>,
-    interrupt: impl Future<Output = ()>,
+    signals: &mut impl SignalSource,
     state: &mut AppState,
 ) -> io::Result<Ended> {
     let mut check = std::pin::pin!(check);
-    let mut interrupt = std::pin::pin!(interrupt);
     let mut screen = Screen::new(display);
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -335,7 +424,13 @@ async fn drive<T: Term>(
     let ended = loop {
         tokio::select! {
             biased;
-            () = &mut interrupt => break Ended::Interrupted,
+            sig = signals.recv_all() => match sig {
+                Received::Suspend => {
+                    screen.suspend(term);
+                    term.suspend();
+                }
+                _ => break Ended::Interrupted,
+            },
             () = &mut check, if !finished => finished = true,
             Some(event) = rx.recv() => state.apply(event, Instant::now()),
             _ = ticker.tick() => screen.frame += 1,
@@ -433,6 +528,14 @@ impl Screen {
         }
         self.drawn = None;
         Ok(())
+    }
+
+    /// Before stopping (Ctrl-Z): the progress line goes; the table stays
+    /// as it is, but isn't redrawn over any more, since the shell writes
+    /// below it: the next frame starts afresh where the cursor is then.
+    fn suspend(&mut self, term: &mut impl Term) {
+        self.clear_progress(term);
+        self.drawn = None;
     }
 
     /// Rows the drawn table takes at `cols` columns (it may have been
@@ -816,6 +919,10 @@ mod tests {
         size: Rc<Cell<(usize, usize)>>,
         out_tty: bool,
         err_tty: bool,
+        /// What the shell prints while hostctl is stopped (on stdout, the
+        /// terminal), and how often that happened.
+        shell: String,
+        suspended: usize,
     }
 
     impl Fake {
@@ -826,6 +933,8 @@ mod tests {
                 size: Rc::new(Cell::new((cols, rows))),
                 out_tty: true,
                 err_tty: true,
+                shell: String::new(),
+                suspended: 0,
             }
         }
     }
@@ -847,6 +956,41 @@ mod tests {
         fn err(&mut self, text: &str) -> io::Result<()> {
             self.err.push_str(text);
             Ok(())
+        }
+
+        fn suspend(&mut self) {
+            self.suspended += 1;
+            self.out.push_str(&self.shell);
+        }
+    }
+
+    /// Signals at fixed times (ms after it was made), then none.
+    struct Script {
+        start: tokio::time::Instant,
+        signals: std::collections::VecDeque<(u64, Received)>,
+    }
+
+    impl Script {
+        fn new(signals: &[(u64, Received)]) -> Script {
+            Script {
+                start: tokio::time::Instant::now(),
+                signals: signals.iter().copied().collect(),
+            }
+        }
+    }
+
+    impl SignalSource for Script {
+        async fn recv_all(&mut self) -> Received {
+            let Some(&(at, sig)) = self.signals.front() else {
+                return std::future::pending().await;
+            };
+            if at > 0 {
+                tokio::time::sleep_until(self.start + Duration::from_millis(at)).await;
+            }
+            // Only once it is delivered: a wait cut short by another
+            // branch of the loop starts over.
+            self.signals.pop_front();
+            sig
         }
     }
 
@@ -1013,16 +1157,33 @@ mod tests {
         events: Vec<(u64, Event)>,
         interrupt_after: Option<u64>,
     ) -> Ended {
+        let signals: Vec<(u64, Received)> = interrupt_after
+            .map(|ms| (ms, Received::Sig(Sig::Interrupt)))
+            .into_iter()
+            .collect();
+        run_with(term, display, state, events, &signals).await
+    }
+
+    /// [`run`] with these signals.
+    async fn run_with(
+        term: &mut Fake,
+        display: Display,
+        state: &mut AppState,
+        events: Vec<(u64, Event)>,
+        signals: &[(u64, Received)],
+    ) -> Ended {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let interrupt = async move {
-            match interrupt_after {
-                Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
-                None => std::future::pending().await,
-            }
-        };
-        drive(term, display, play(tx, events), &mut rx, interrupt, state)
-            .await
-            .unwrap()
+        let mut signals = Script::new(signals);
+        drive(
+            term,
+            display,
+            play(tx, events),
+            &mut rx,
+            &mut signals,
+            state,
+        )
+        .await
+        .unwrap()
     }
 
     const PLAIN: Style = Style { color: false };
@@ -1321,6 +1482,71 @@ mod tests {
         assert_eq!(vt.scrollback, ["$ hostctl status"]);
     }
 
+    /// What bash prints when a job is stopped with Ctrl-Z and `fg`ed again.
+    const BASH_STOP_AND_FG: &str =
+        "^Z\n[1]+  Stopped                 hostctl status\n$ fg\nhostctl status\n";
+
+    #[tokio::test(start_paused = true)]
+    async fn ctrl_z_gives_the_terminal_back_and_draws_afresh() {
+        let names = ["bigmem", "web1", "web2"];
+        let mut s = state(&names);
+        let mut term = Fake::new(80, 30);
+        term.shell = BASH_STOP_AND_FG.into();
+        let ended = run_with(
+            &mut term,
+            Display::Table(PLAIN),
+            &mut s,
+            complete_check(&names),
+            &[(700, Received::Suspend)],
+        )
+        .await;
+        assert_eq!(ended, Ended::Finished);
+        assert_eq!(term.suspended, 1);
+        let mut vt = Vt::new(80, 30);
+        vt.feed("$ hostctl status\n");
+        vt.feed(&term.out);
+        let screen = vt.screen();
+        // The frame on the screen when it stopped, what the shell said, then
+        // the whole table again, below.
+        let shell = lines(BASH_STOP_AND_FG);
+        let at = screen
+            .iter()
+            .position(|line| *line == shell[0])
+            .unwrap_or_else(|| panic!("the shell's lines were drawn over: {screen:#?}"));
+        assert_eq!(screen[at..at + shell.len()], shell[..], "{screen:#?}");
+        assert!(
+            screen[1].starts_with("github:jjant/nix-config"),
+            "{screen:#?}"
+        );
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
+        assert_eq!(screen[at + shell.len()..], lines(&table)[..], "{screen:#?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ctrl_z_takes_the_progress_line_off_first() {
+        let names = ["bigmem", "web1"];
+        let mut s = state(&names);
+        let mut term = Fake::new(80, 24);
+        run_with(
+            &mut term,
+            Display::Progress,
+            &mut s,
+            complete_check(&names),
+            &[(400, Received::Suspend), (900, Received::Suspend)],
+        )
+        .await;
+        assert_eq!(term.suspended, 2);
+        // Each stop came after a cleared line, and the line came back.
+        let frames: Vec<&str> = term.err.split("\r\x1b[K").collect();
+        assert!(
+            frames.iter().filter(|f| f.is_empty()).count() >= 3,
+            "{:?}",
+            term.err
+        );
+        assert!(term.err.ends_with("\r\x1b[K"), "{:?}", term.err);
+        assert!(term.out.is_empty());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn typed_lines_above_stay_put() {
         // Output that was on the screen before (warnings, the prompt) is
@@ -1387,7 +1613,7 @@ mod tests {
             Display::Table(PLAIN),
             check,
             &mut rx,
-            std::future::pending(),
+            &mut Script::new(&[]),
             &mut s,
         )
         .await
@@ -1481,7 +1707,7 @@ mod tests {
             Display::Progress,
             std::future::pending(),
             &mut rx,
-            async {},
+            &mut Script::new(&[(0, Received::Sig(Sig::Interrupt))]),
             &mut s,
         )
         .await

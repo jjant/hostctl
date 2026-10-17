@@ -31,7 +31,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use self::app::{After, App, Command, Mode};
 use crate::config::Host;
 use crate::engine::{Engine, EventTx, Freshness};
-use crate::live::{Sig, Signals};
+use crate::live::{Received, Sig, Signals};
 use crate::model::{AppState, Event, HostId};
 use crate::nix::FlakeInfo;
 use crate::util;
@@ -54,7 +54,7 @@ const FRAME: Duration = Duration::from_millis(16);
 /// - the first check of `hosts` starts before terminal setup (so its
 ///   round trips overlap with metadata and probes);
 /// - alternate screen + raw mode, restored on exit, error, panic (hook) and
-///   SIGTERM/SIGHUP;
+///   SIGTERM/SIGHUP, and while suspended (Ctrl-Z, SIGTSTP);
 /// - `tokio::select!` over crossterm's `EventStream`, engine events (the
 ///   channel is drained before each draw; ≤ 1 frame / 16 ms) and a sleep
 ///   until [`app::App::next_wakeup`];
@@ -216,10 +216,16 @@ impl Ui {
             };
             tokio::select! {
                 biased;
-                _ = signals.recv() => {
-                    self.interrupt();
-                    return Ok(());
-                }
+                received = signals.recv_all() => match received {
+                    Received::Suspend => {
+                        self.suspend(terminal, modes)?;
+                        dirty = true;
+                    }
+                    Received::Sig(_) => {
+                        self.interrupt();
+                        return Ok(());
+                    }
+                },
                 event = next_event(&mut self.events) => {
                     dirty = true;
                     match event {
@@ -261,6 +267,21 @@ impl Ui {
         }
     }
 
+    /// Ctrl-Z (or SIGTSTP): give the terminal back as on quitting, stop
+    /// until continued (`fg`), then take it again and draw everything anew.
+    /// Nothing reads the terminal meanwhile; work in flight goes on once
+    /// hostctl does.
+    fn suspend(&mut self, terminal: &mut Tty, modes: &mut Modes) -> anyhow::Result<()> {
+        self.events = None;
+        terminal.show_cursor()?;
+        modes.leave()?;
+        crate::live::stop();
+        modes.enter()?;
+        repaint(terminal)?;
+        self.events = Some(EventStream::new());
+        Ok(())
+    }
+
     /// Apply the events waiting in the channel.
     fn drain(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
@@ -281,6 +302,11 @@ impl Ui {
     ) -> anyhow::Result<Flow> {
         let now = Instant::now();
         let command = match event {
+            // Raw mode makes Ctrl-Z a key, not SIGTSTP.
+            TermEvent::Key(key) if suspends(&key) => {
+                self.suspend(terminal, modes)?;
+                Command::None
+            }
             TermEvent::Key(key) => self.app.on_key(key, now),
             // Bracketed paste: pasted text never triggers keys, except as
             // typing in the filter prompt.
@@ -644,6 +670,13 @@ async fn press_enter(signals: &mut Signals) -> io::Result<bool> {
     }
 }
 
+/// Ctrl-Z, which suspends the dashboard.
+fn suspends(key: &KeyEvent) -> bool {
+    key.kind != KeyEventKind::Release
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('z' | 'Z'))
+}
+
 /// The keys that leave the "Press Enter" prompt: Enter, Esc, Ctrl-C,
 /// Ctrl-D — not letters, which may be typing meant for the command.
 fn returns(key: &KeyEvent) -> bool {
@@ -760,6 +793,21 @@ mod tests {
         assert_eq!(refresh_freshness(false, false), Freshness::Auto);
         assert_eq!(refresh_freshness(true, true), Freshness::Offline);
         assert_eq!(refresh_freshness(false, true), Freshness::Offline);
+    }
+
+    #[test]
+    fn ctrl_z_suspends() {
+        let key = |code, modifiers| KeyEvent::new(code, modifiers);
+        assert!(suspends(&key(KeyCode::Char('z'), KeyModifiers::CONTROL)));
+        assert!(suspends(&key(
+            KeyCode::Char('Z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(!suspends(&key(KeyCode::Char('z'), KeyModifiers::NONE)));
+        assert!(!suspends(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        let mut release = key(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        release.kind = KeyEventKind::Release;
+        assert!(!suspends(&release));
     }
 
     #[test]
