@@ -2,5 +2,6 @@
 //! home-manager) runs the configuration its flake currently describes.
 //! DESIGN.md describes the architecture.
 
+pub mod closure;
 pub mod storepath;
 pub mod util;

@@ -1,0 +1,5 @@
+atuin: ε → ∅
+atuin-server.service: ε → ∅
+hm_tmuxwindownaming: ε → ∅
+hosts: 0.0.0, 0.0.0-fish → ∅
+hosts.json: ε → ∅

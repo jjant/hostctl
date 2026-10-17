@@ -1,0 +1,3 @@
+atuin: ε → ∅
+atuin-server.service: ε → ∅
+hm_tmuxwindownaming: ε → ∅
