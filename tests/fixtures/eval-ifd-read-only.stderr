@@ -1,0 +1,18 @@
+error:
+       … in the condition of the assert statement
+         at «github:nixos/nixpkgs/25f538306313eae3927264466c70d7001dcea1df?narHash=sha256-ZsIrKmhp4vbBXoXXmR/tBXA/UCsAQiJL9vsgZEduhVY%3D»/pkgs/build-support/trivial-builders/default.nix:172:5:
+          171|     # TODO: To fully deprecate, replace the assertion with `lib.isString` and remove the warning
+          172|     assert lib.assertMsg (lib.strings.isConvertibleWithToString text)
+             |     ^
+          173|       "pkgs.writeText ${lib.strings.escapeNixString name}: The second argument should be a string, but it's a ${builtins.typeOf text} instead.";
+
+       … in the left operand of the OR (||) operator
+         at «github:nixos/nixpkgs/25f538306313eae3927264466c70d7001dcea1df?narHash=sha256-ZsIrKmhp4vbBXoXXmR/tBXA/UCsAQiJL9vsgZEduhVY%3D»/lib/asserts.nix:50:31:
+           49|   # TODO(Profpatsch): add tests that check stderr
+           50|   assertMsg = pred: msg: pred || throw msg;
+             |                               ^
+           51|
+
+       (stack trace truncated; use '--show-trace' to show the full, detailed trace)
+
+       error: path '/nix/store/wdfh0jh598v4qshmcs296ri45p0win4b-gen.drv' is not valid

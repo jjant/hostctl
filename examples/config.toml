@@ -1,0 +1,195 @@
+# hostctl: an annotated example configuration.
+#
+# hostctl answers one question: is every host running the configuration its
+# flake currently describes? This file describes one person's machines (four
+# Linux machines running standalone home-manager and a Mac running nix-darwin,
+# all built from github:jjant/nix-config) and documents every option.
+# Commented-out lines show defaults or alternatives.
+#
+# Where hostctl looks: --config FILE, then $HOSTCTL_CONFIG, then
+# $XDG_CONFIG_HOME/hostctl/config.toml (~/.config/hostctl/config.toml), then
+# /etc/hostctl/config.toml. Without a file every option has its default.
+# Unknown keys are errors. `hostctl config check FILE` validates a file
+# without reading anything else; `hostctl config show` prints the effective
+# configuration; `hostctl hosts` lists the resolved hosts.
+#
+# Durations are strings like "500ms", "20s", "10m" and "1h30m", or a number
+# of seconds.
+
+# The flake every host is compared against, unless the host sets its own.
+# --flake and $HOSTCTL_FLAKE override it; without any, hostctl uses `.` when
+# ./flake.nix exists.
+flake = "github:jjant/nix-config"
+
+# Which host is this machine (probed and activated without ssh). Normally
+# detected: a host is local when the host part of its destination, or one of
+# its `hostnames`, is this machine's hostname (a dot-less name matches the
+# first label of a dotted one); its bare name counts only if it has neither a
+# dotted destination nor dotted hostnames. A destination with another user,
+# a port other than 22 or a loopback address is never detected as local. On
+# a Mac, failing all that, the only darwin host without a destination (or
+# with a loopback one) is "assumed local". --self and $HOSTCTL_SELF override
+# it; only force it in a per-machine config.
+# self = "bigmem"
+
+# Evaluations at once (default: min(CPUs, available memory / 1 GiB); one
+# evaluation peaks at 0.6-0.9 GB). --jobs overrides it.
+# jobs = 8
+
+# How long a host may take to answer its probe (more than 0).
+timeout = "20s"
+
+# How long one evaluation may take ("0s": no limit).
+eval-timeout = "10m"
+
+# Add the flake's nixosConfigurations, darwinConfigurations and
+# homeConfigurations as hosts. A discovered name doubles as the ssh
+# destination when it looks like `[user@]host`; a name found in several
+# outputs is checked as nixos, else darwin, else home-manager. With false,
+# only the inventory and [hosts.<name>] tables define hosts.
+discover = true
+
+# A flake attribute holding `{ hosts.<name> = { ... }; }`, with the same keys
+# as the [hosts.<name>] tables below: host settings versioned with the flake,
+# so every machine (and teammate) sees the hosts of the revision being
+# compared. Read when present; "" turns it off. For example, in flake.nix:
+#   lib.hostctl.hosts.mac-m1 = { optional = true; probe = "current-system"; };
+inventory = "lib.hostctl"
+
+# Globs of host names to leave out (installer images, CI-only
+# configurations, ...): `*`, `?`, `[a-z]`, `[!x]`.
+exclude = ["*-iso"]
+
+# Remember results per locked flake revision, so that an unchanged flake costs
+# no evaluation at all (--no-cache: neither read nor write it for one run).
+cache = true
+
+[nix]
+# The nix executable.
+command = "nix"
+# Extra arguments for every nix invocation, e.g. ["--option", "warn-dirty",
+# "false"]. ("--impure" also turns the cache off.)
+options = []
+# Evaluate with --read-only (no .drv files written); a configuration that
+# needs import-from-derivation is retried without it, and remembered.
+read-only = true
+# Reuse a flake's resolution (the revision its branch points at) for this
+# long, then ask again ("0s": on every check). --refresh forces it,
+# --offline never asks. GitHub serves branch heads with this max-age anyway.
+refresh = "60s"
+
+[ssh]
+# The ssh executable. Your ssh config applies (aliases, ProxyCommand, agents,
+# certificates).
+command = "ssh"
+# Extra arguments for every ssh run. They come before hostctl's own, and ssh
+# keeps the first value of an option, so they win.
+options = []
+# How long hostctl's private ControlMaster connections stay up after a check
+# ("0s": no multiplexing). They make re-probes cost ~20ms, and your own
+# interactive sessions never ride them.
+persist = "10m"
+
+[ui]
+# Re-check every so often in the dashboard ("0s": only when you press r).
+# Keep it at 60s or more for github: flakes, whose API allows 60 requests an
+# hour.
+refresh-interval = "0s"
+
+# Settings for every host. Layers merge field by field, later wins:
+# discovery -> the flake's inventory -> [defaults] -> [hosts.<name>].
+# `destination` may use {name}, the host's name.
+[defaults]
+# destination = "{name}.tailnet.example"
+# ssh-options = ["-o", "ServerAliveInterval=15"]
+
+# One table per host, named after its configuration in the flake. Every key
+# is optional (discovered hosts need none); keys left out fall through to
+# [defaults], the inventory and discovery.
+[hosts.al2-x86_64]
+# What the host runs: "nixos", "darwin", "home-manager" or "custom". This
+# decides what is evaluated, where the active generation is read and how it
+# is activated. Discovery fills it in; set it to choose when a name is in
+# several outputs.
+kind = "home-manager"
+# How to reach the host: `host`, `user@host`, `ssh://[user@]host[:port]` or
+# an alias from your ssh config. Default: the host's name, if it looks like
+# `[user@]host`.
+destination = "devhost-devuser1-1a-8d41e07a.dc-west1.example.com"
+# The activation command (`a` in the dashboard, `hostctl activate HOST`): a
+# shell template whose placeholders are replaced by shell-quoted values:
+# {flake} the locked URL that was compared, {flake_url} the flake as
+# configured, {rev}, {name}, {attr}, {out} the desired store path,
+# {destination}, {ssh_host} its host part. Unset: the kind's default (for
+# home-manager: build {flake}#.{attr}, check it is {out}, run its
+# `activate`). false or "" turns activation off. This flake's own `activate`
+# app picks the desk's configuration by hostname.
+activate = "nix run {flake}#activate"
+
+[hosts.al2-aarch64]
+kind = "home-manager"
+destination = "devhost-devuser1-1a-7f3a0b82.dc-west1.example.com"
+activate = "nix run {flake}#activate"
+
+[hosts.al2023-x86_64]
+kind = "home-manager"
+destination = "devhost-devuser1-1a-c2d85e16.dc-west1.example.com"
+activate = "nix run {flake}#activate"
+
+[hosts.bigmem]
+kind = "home-manager"
+# Also bigmem's hostname, so on bigmem itself this host is local: no ssh.
+destination = "devhost-devuser1-1a-e6904c1d.dc-west1.example.com"
+activate = "nix run {flake}#activate"
+# Where `activate` runs: "target" (default: on the host, over ssh unless it
+# is this machine) or "local" (here, for push tools such as
+# `nixos-rebuild switch --flake {flake}#{name} --target-host {destination} --sudo`,
+# `deploy {flake}#{name}` or `colmena apply --on {name}`).
+# activate-on = "target"
+# More names this machine answers to, for self detection.
+# hostnames = ["bigmem.internal.example"]
+# Extra ssh arguments for this host (before the [ssh] options).
+# ssh-options = ["-o", "ServerAliveInterval=15"]
+
+[hosts.mac-m1]
+kind = "darwin"
+# The Mac is reachable only through the reverse tunnel a desk gets when you
+# ssh into it from the Mac (RemoteForward 2022 localhost:22). A loopback
+# destination is never this machine, except on the Mac itself, where the
+# only darwin host is "assumed local".
+destination = "ssh://devuser1@localhost:2022"
+# A forced-command route: the tunnel's key may only run `current-system`, so
+# hostctl sends that instead of its probe script. The answer is a store path
+# (or the probe's key=value lines). There is no shell at the other end, so
+# no remote diff or activation over this route; on the Mac itself the
+# normal probe and activation apply.
+probe = "current-system"
+# Unreachable is expected: shown as offline, and doesn't fail the check.
+optional = true
+# Shown next to the host's status.
+note = "reachable only from a desk you ssh into from the Mac"
+# No `activate`: the darwin default,
+#   sudo /run/current-system/sw/bin/darwin-rebuild switch --flake {flake}#{name}
+# activates exactly the compared revision. (`nix run {flake}#activate` would
+# switch to the app's own copy of the flake, which has no `self.rev`, and
+# this configuration records its revision.)
+
+# A host of another flake, of kind "custom": any attribute whose out path is
+# compared with what a profile symlink points at.
+# [hosts.router]
+# kind = "custom"
+# flake = "github:jjant/router"
+# The attribute to evaluate, as an absolute path (`<flake>#.<attr>`); custom
+# hosts need one. The defaults:
+#   nixos         nixosConfigurations.<name>.config.system.build.toplevel
+#   darwin        darwinConfigurations.<name>.system
+#   home-manager  homeConfigurations.<name>.activationPackage
+# attr = "packages.aarch64-linux.router-system"
+# The profile symlink to read (absolute, or ~/...); custom hosts need one,
+# unless they have a probe. The defaults: /nix/var/nix/profiles/system for
+# nixos and darwin (whose running generation is /run/current-system), and
+# ${XDG_STATE_HOME:-~/.local/state}/nix/profiles/home-manager, else
+# /nix/var/nix/profiles/per-user/$USER/home-manager, for home-manager.
+# profile = "/nix/var/nix/profiles/router"
+# destination = "root@192.168.1.1"
+# activate = false
