@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::process::ExitStatus;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -172,7 +173,7 @@ struct Ui {
 impl Ui {
     async fn run(&mut self, signals: &mut Signals) -> anyhow::Result<()> {
         let hook = PanicHook::install();
-        let mut modes = Modes::default();
+        let mut modes = Modes::new(Arc::clone(&hook.restored));
         modes.enter()?;
         let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
         repaint(&mut terminal)?;
@@ -713,26 +714,44 @@ fn write_stdout(text: &str) -> io::Result<()> {
 }
 
 /// The dashboard's terminal modes: raw input, the alternate screen,
-/// bracketed paste. Left again on drop.
+/// bracketed paste. Left again on drop — unless the [`PanicHook`] has
+/// already put the terminal back: leaving the alternate screen a second
+/// time would move the cursor back up over the panic's message.
 #[derive(Default)]
 struct Modes {
     active: bool,
+    /// Set by the panic hook once it restored the terminal.
+    restored: Arc<AtomicBool>,
 }
 
 impl Modes {
+    /// Modes the panic hook that sets `restored` undoes.
+    fn new(restored: Arc<AtomicBool>) -> Modes {
+        Modes {
+            active: false,
+            restored,
+        }
+    }
+
     fn enter(&mut self) -> io::Result<()> {
         enable_raw_mode()?;
         self.active = true;
+        self.restored.store(false, Ordering::SeqCst);
         crossterm::execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
     }
 
     fn leave(&mut self) -> io::Result<()> {
-        if !std::mem::take(&mut self.active) {
+        if !self.leaving() {
             return Ok(());
         }
         let screen = crossterm::execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
         let raw = disable_raw_mode();
         screen.and(raw)
+    }
+
+    /// Whether [`Modes::leave`] has anything to undo (once).
+    fn leaving(&mut self) -> bool {
+        std::mem::take(&mut self.active) && !self.restored.load(Ordering::SeqCst)
     }
 }
 
@@ -745,22 +764,28 @@ impl Drop for Modes {
 type PanicFn = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
 
 /// While this lives, a panic first restores the terminal (so its message
-/// is readable), then runs the previous hook. Dropping it puts that hook
-/// back.
+/// is readable) and says so in [`PanicHook::restored`], then runs the
+/// previous hook. Dropping it puts that hook back.
 struct PanicHook {
     previous: Option<Arc<PanicFn>>,
+    /// Set once the hook restored the terminal ([`Modes`] then leaves it be).
+    restored: Arc<AtomicBool>,
 }
 
 impl PanicHook {
     fn install() -> PanicHook {
         let previous: Arc<PanicFn> = Arc::new(std::panic::take_hook());
         let chained = Arc::clone(&previous);
+        let restored = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&restored);
         std::panic::set_hook(Box::new(move |info| {
             restore_terminal();
+            flag.store(true, Ordering::SeqCst);
             chained(info);
         }));
         PanicHook {
             previous: Some(previous),
+            restored,
         }
     }
 }
@@ -933,6 +958,26 @@ mod tests {
             ran_text(&Ran::NotRun("interrupted".into())),
             "not run: interrupted"
         );
+    }
+
+    #[test]
+    fn modes_the_panic_hook_restored_are_left_alone() {
+        let restored = Arc::new(AtomicBool::new(false));
+        let mut modes = Modes::new(Arc::clone(&restored));
+        assert!(!modes.leaving(), "never entered");
+        modes.active = true;
+        assert!(modes.leaving());
+        assert!(!modes.leaving(), "left once");
+        // A panic put the terminal back: leaving again (the alternate
+        // screen, mostly) would move the cursor over the panic's message.
+        modes.active = true;
+        restored.store(true, Ordering::SeqCst);
+        assert!(!modes.leaving());
+        assert!(!modes.active);
+        // The hook hands out its flag.
+        let hook = PanicHook::install();
+        assert!(!hook.restored.load(Ordering::SeqCst));
+        drop(hook);
     }
 
     #[test]
