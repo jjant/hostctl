@@ -480,6 +480,33 @@ fn parse_meminfo_available(meminfo: &str) -> Option<u64> {
     Some(kb * 1024)
 }
 
+/// Write the executable `path` from a child process. Were the write fd ever
+/// open in the (multi-threaded) test process, a fork in another test could
+/// inherit it, and running the file would fail with ETXTBSY until that fork
+/// execs.
+#[cfg(test)]
+pub(crate) fn write_executable(path: &std::path::Path, content: &str) {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("sh")
+        .args(["-c", "cat >\"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(content.as_bytes())
+        .unwrap();
+    assert!(
+        child.wait().unwrap().success(),
+        "writing {}",
+        path.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

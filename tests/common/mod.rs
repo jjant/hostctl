@@ -21,9 +21,9 @@
 use std::cell::RefCell;
 use std::ffi::{CString, OsString};
 use std::fs;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::os::unix::fs::symlink;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -100,8 +100,29 @@ fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
     fs::write(path, contents).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
 }
 
-fn executable(path: &Path) {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+/// Write the executable `path` (parents created) from a child process. Were
+/// the write fd ever open in this (multi-threaded) test process, a fork in
+/// another test could inherit it, and running the file would fail with
+/// ETXTBSY until that fork execs.
+pub fn write_executable(path: &Path, contents: impl AsRef<[u8]>) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut child = Command::new("sh")
+        .args(["-c", "cat >\"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(contents.as_ref())
+        .unwrap();
+    assert!(
+        child.wait().unwrap().success(),
+        "writing {}",
+        path.display()
+    );
 }
 
 /// A symlink at `link` (parents created) pointing at `target`.
@@ -586,8 +607,7 @@ impl World {
             ("fake-nix-store", "nix-store"),
         ] {
             let bin = fake.join("bin").join(to);
-            write(&bin, fs::read(support.join(from)).unwrap());
-            executable(&bin);
+            write_executable(&bin, fs::read(support.join(from)).unwrap());
         }
         let world = World {
             config_file: root.join("xdg/config/hostctl/config.toml"),
@@ -1003,8 +1023,7 @@ impl FakeHost {
     /// Command `name` on its PATH is the shell script `script`.
     pub fn bin(&self, name: &str, script: &str) -> &Self {
         let bin = self.dir.join("bin").join(name);
-        write(&bin, script);
-        executable(&bin);
+        write_executable(&bin, script);
         self
     }
 
@@ -1068,8 +1087,7 @@ impl FakeHost {
         let bin = self.dir.join("bin/nix-store");
         if !bin.exists() {
             let support = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support");
-            write(&bin, fs::read(support.join("fake-nix-store")).unwrap());
-            executable(&bin);
+            write_executable(&bin, fs::read(support.join("fake-nix-store")).unwrap());
         }
         self
     }

@@ -1175,8 +1175,7 @@ mod tests {
         fn script(&self, at: &Path, body: &str) {
             fs::create_dir_all(at.parent().unwrap()).unwrap();
             let sh = which("sh").unwrap();
-            fs::write(at, format!("#!{}\n{body}", sh.display())).unwrap();
-            fs::set_permissions(at, fs::Permissions::from_mode(0o755)).unwrap();
+            util::write_executable(at, &format!("#!{}\n{body}", sh.display()));
         }
 
         fn shim(&self, name: &str, body: &str) {

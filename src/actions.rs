@@ -396,6 +396,7 @@ mod tests {
 
     use super::*;
     use crate::config::{Sources, SshTarget};
+    use crate::util::write_executable;
 
     // ── Templates ────────────────────────────────────────────────────────
 
@@ -1280,11 +1281,6 @@ mod tests {
                 .chain(std::env::split_paths(&inherited)),
         )
         .unwrap()
-    }
-
-    fn write_executable(path: &Path, content: &str) {
-        std::fs::write(path, content).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     struct Shell {

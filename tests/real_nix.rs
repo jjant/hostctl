@@ -7,11 +7,11 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use common::{Run, command, finish, tempdir};
+use common::{Run, command, finish, tempdir, write_executable};
 
 fn which(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -180,17 +180,14 @@ fn a_real_flake_against_a_real_profile() {
     let bin = root.join("bin");
     fs::create_dir(&bin).unwrap();
     let log = root.join("nix.log");
-    let wrapper = bin.join("nix");
-    fs::write(
-        &wrapper,
+    write_executable(
+        &bin.join("nix"),
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'{}'\nexec '{}' \"$@\"\n",
             log.display(),
             real_nix.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
     let options = match &store {
         Some(store) => format!("nix.options = [\"--store\", {store:?}]\n"),
