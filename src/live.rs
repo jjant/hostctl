@@ -183,14 +183,8 @@ async fn wait_until<F: Future>(
             () = &mut interrupt => break None,
             output = &mut work => break Some(output),
             _ = ticker.tick(), if spin => {
-                let line = format!(
-                    "{} {} {}",
-                    SPINNER[frame % SPINNER.len()],
-                    util::sanitize_terminal(label),
-                    seconds(start.elapsed())
-                );
                 let cols = terminal_size(libc::STDERR_FILENO).map_or(80, |(cols, _)| cols);
-                let _ = write_err(&format!("\r\x1b[K{}", util::truncate(&line, cols.saturating_sub(1))));
+                let _ = write_err(&spinner_line(label, frame, start.elapsed(), cols));
                 shown = true;
                 frame += 1;
             }
@@ -200,6 +194,19 @@ async fn wait_until<F: Future>(
         let _ = write_err("\r\x1b[K");
     }
     output
+}
+
+/// What [`wait_until`] writes for spinner `frame` after `elapsed`:
+/// `⠋ <label> 2.1s` over the current line, on one line of `cols` columns
+/// (the label may come from a flake: it is sanitized and kept on one line).
+fn spinner_line(label: &str, frame: usize, elapsed: Duration, cols: usize) -> String {
+    let line = format!(
+        "{} {} {}",
+        SPINNER[frame % SPINNER.len()],
+        util::one_line(label),
+        seconds(elapsed)
+    );
+    format!("\r\x1b[K{}", util::truncate(&line, cols.saturating_sub(1)))
 }
 
 /// The size (columns, rows) of the terminal `fd` refers to, if it is one.
@@ -1084,6 +1091,24 @@ mod tests {
         let interrupt = tokio::time::sleep(Duration::from_secs(1));
         assert_eq!(wait_until("x", work, interrupt, false).await, None);
         assert!(dropped.get());
+    }
+
+    #[test]
+    fn the_spinner_label_stays_on_its_line() {
+        let line = spinner_line(
+            "reading the hosts of evil\nflake\u{1b}[2J",
+            1,
+            Duration::from_millis(2140),
+            80,
+        );
+        assert_eq!(
+            line,
+            "\r\x1b[K⠙ reading the hosts of evil flake\\u{1b}[2J 2.1s"
+        );
+        assert_eq!(
+            spinner_line("comparing the closures of web1", 0, Duration::ZERO, 20),
+            "\r\x1b[K⠋ comparing the cl…"
+        );
     }
 
     #[test]

@@ -565,10 +565,7 @@ fn select(hosts: Vec<Host>, patterns: &[String]) -> Result<Vec<Host>, String> {
         .iter()
         .find(|pattern| !hosts.iter().any(|host| matches(pattern, host)))
     {
-        let names: Vec<_> = hosts
-            .iter()
-            .map(|h| util::sanitize_terminal(&h.name))
-            .collect();
+        let names: Vec<_> = hosts.iter().map(|h| util::one_line(&h.name)).collect();
         let hint = if unmatched == "@local" {
             "; none is this machine (set self, or pass --self HOST)"
         } else {
@@ -665,7 +662,7 @@ async fn diff(
         let names: Vec<_> = selection
             .hosts
             .iter()
-            .map(|(_, h)| util::sanitize_terminal(&h.name))
+            .map(|(_, h)| util::one_line(&h.name))
             .collect();
         return Err(Exit::Usage(format!(
             "diff needs exactly one host, but {pattern:?} matches {}",
@@ -693,13 +690,13 @@ async fn diff(
         outcome = run_diff(engine, &mut state, id, &current, &desired, signals).await?;
     }
     let host = &state.hosts[id].host;
-    let name = util::sanitize_terminal(&host.name);
+    let name = util::one_line(&host.name);
     match outcome {
         Ok(DiffOutcome::Diff { diff }) => {
             if json {
                 print_json(&output::DiffReport {
                     version: 1,
-                    host: &name,
+                    host: &util::sanitize_terminal(&host.name),
                     diff: &diff,
                 })?;
             } else {
@@ -727,16 +724,18 @@ async fn diff(
 /// The current and desired generations of a checked host, or why they
 /// aren't both known.
 fn diff_inputs(h: &HostState) -> Result<(StorePath, StorePath), String> {
-    let name = util::sanitize_terminal(&h.host.name);
+    let name = util::one_line(&h.host.name);
     let current = match (h.current(), h.probe.get()) {
         (Some(current), _) => current.clone(),
         (None, Some(Ok(report))) => {
             return Err(format!(
                 "{name} has no generation to compare: {}",
-                report
-                    .none_reason
-                    .as_deref()
-                    .unwrap_or("it was never activated")
+                util::one_line(
+                    report
+                        .none_reason
+                        .as_deref()
+                        .unwrap_or("it was never activated")
+                )
             ));
         }
         (None, Some(Err(e))) => {
@@ -772,8 +771,9 @@ async fn run_diff(
     signals: &mut Signals,
 ) -> Result<DiffResult, Exit> {
     let host = state.hosts[id].host.clone();
+    let name = util::one_line(&host.name);
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let label = format!("comparing the closures of {}", host.name);
+    let label = format!("comparing the closures of {name}");
     live::wait_for(
         &label,
         engine.diff(id, &host, current, desired, &tx),
@@ -788,7 +788,7 @@ async fn run_diff(
         .diff
         .get()
         .cloned()
-        .ok_or_else(|| Exit::Trouble(format!("the diff of {} produced no result", host.name)))
+        .ok_or_else(|| Exit::Trouble(format!("the diff of {name} produced no result")))
 }
 
 /// Build host `id`'s desired generation where its activation would run,
@@ -801,16 +801,17 @@ async fn build_desired(
     signals: &mut Signals,
 ) -> Result<(), Exit> {
     let host = &state.hosts[id].host;
-    let name = util::sanitize_terminal(&host.name);
+    let name = util::one_line(&host.name);
     let flake = state.flake_info(&host.flake).ok_or_else(|| {
         Exit::Trouble(format!("can't build for {name}: its flake isn't resolved"))
     })?;
-    let command = actions::build_command(host, flake)
-        .map_err(|why| Exit::Trouble(format!("can't build for {name}: {why}")))?;
+    let command = actions::build_command(host, flake).map_err(|why| {
+        Exit::Trouble(format!("can't build for {name}: {}", util::one_line(&why)))
+    })?;
     eprint(&format!(
         "building the new generation of {name} {}:\n  {}\n",
         build_place(host),
-        util::sanitize_terminal(&command)
+        command_text(&command, "  ")
     ));
     let label = format!("preparing the build on {name}");
     let spec = live::wait_for(&label, engine.prepare_interactive(host, &command), signals)
@@ -826,7 +827,7 @@ async fn build_desired(
         ))),
         Err(e) => Err(Exit::Trouble(format!(
             "can't run {}: {e}",
-            util::sanitize_terminal(&spec.program)
+            util::one_line(&spec.program)
         ))),
     }
 }
@@ -836,8 +837,15 @@ fn build_place(host: &Host) -> String {
     if actions::runs_here(host) {
         "here".into()
     } else {
-        format!("on {}", util::sanitize_terminal(&host.name))
+        format!("on {}", util::one_line(&host.name))
     }
+}
+
+/// Command text for a message, sanitized but kept on its lines (it may
+/// span several): every line after the first starts with `indent` and
+/// four more spaces, so none can pass for a line of hostctl's own.
+fn command_text(command: &str, indent: &str) -> String {
+    util::sanitize_terminal(command).replace('\n', &format!("\n{indent}    "))
 }
 
 /// `spec` with its stdout sent to stderr, so `--json` output stays clean.
@@ -910,52 +918,18 @@ async fn activate(
         return Ok(state.exit_code());
     }
 
-    let mut plan = Vec::new();
-    let mut refused = 0;
-    let mut listing = String::from("\n");
-    for h in &state.hosts {
-        let status = h.status();
-        if !force && !status.needs_activation() && status != Status::UpToDate {
-            listing.push_str(&format!(
-                "{}: skipped ({})\n",
-                util::sanitize_terminal(&h.host.name),
-                status.label()
-            ));
-        }
-    }
-    for id in targets {
-        let h = &state.hosts[id];
-        match activation_of(&state, id) {
-            Ok(activation) => {
-                listing.push_str(&plan_text(&h.host, &activation));
-                plan.push((id, activation));
-            }
-            Err(why) => {
-                refused += 1;
-                listing.push_str(&format!(
-                    "{}: can't activate: {}\n",
-                    util::sanitize_terminal(&h.host.name),
-                    util::sanitize_terminal(&why)
-                ));
-            }
-        }
-    }
+    let Plan {
+        listing,
+        activations: plan,
+        refused,
+    } = plan_activations(&state, &targets, force);
     print(&listing)?;
     if plan.is_empty() {
         return Ok(2);
     }
-    if !yes {
-        let question = match plan.as_slice() {
-            [(id, _)] => format!(
-                "Activate {}?",
-                util::sanitize_terminal(&state.hosts[*id].host.name)
-            ),
-            many => format!("Activate these {} hosts?", many.len()),
-        };
-        if !confirm(question, signals).await? {
-            print("not activating\n")?;
-            return Ok(state.exit_code());
-        }
+    if !yes && !confirm(question(&state, &plan), signals).await? {
+        print("not activating\n")?;
+        return Ok(state.exit_code());
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -964,7 +938,7 @@ async fn activate(
     for (n, (id, activation)) in plan.iter().enumerate() {
         let id = *id;
         let host = state.hosts[id].host.clone();
-        let name = util::sanitize_terminal(&host.name).into_owned();
+        let name = util::one_line(&host.name).into_owned();
         attempted += 1;
         print(&format!(
             "\n==> activating {name} {}\n",
@@ -1004,7 +978,7 @@ async fn activate(
         if ran.as_ref().is_ok_and(was_interrupted) {
             let rest: Vec<_> = plan[n + 1..]
                 .iter()
-                .map(|(id, _)| util::sanitize_terminal(&state.hosts[*id].host.name))
+                .map(|(id, _)| util::one_line(&state.hosts[*id].host.name))
                 .collect();
             if !rest.is_empty() {
                 print(&format!(
@@ -1026,6 +1000,62 @@ async fn activate(
     })
 }
 
+/// What `activate` is about to do.
+struct Plan {
+    /// Printed before asking: hosts skipped, each activation, refusals.
+    listing: String,
+    activations: Vec<(HostId, Activation)>,
+    /// Targets that can't be activated.
+    refused: usize,
+}
+
+/// The plan for activating `targets` of a checked `state`; hosts that
+/// aren't targets are listed as skipped when they couldn't be checked
+/// (unless `force`).
+fn plan_activations(state: &AppState, targets: &[HostId], force: bool) -> Plan {
+    let mut plan = Plan {
+        listing: String::from("\n"),
+        activations: Vec::new(),
+        refused: 0,
+    };
+    for h in &state.hosts {
+        let status = h.status();
+        if !force && !status.needs_activation() && status != Status::UpToDate {
+            plan.listing.push_str(&format!(
+                "{}: skipped ({})\n",
+                util::one_line(&h.host.name),
+                status.label()
+            ));
+        }
+    }
+    for &id in targets {
+        let h = &state.hosts[id];
+        match activation_of(state, id) {
+            Ok(activation) => {
+                plan.listing.push_str(&plan_text(&h.host, &activation));
+                plan.activations.push((id, activation));
+            }
+            Err(why) => {
+                plan.refused += 1;
+                plan.listing.push_str(&format!(
+                    "{}: can't activate: {}\n",
+                    util::one_line(&h.host.name),
+                    util::one_line(&why)
+                ));
+            }
+        }
+    }
+    plan
+}
+
+/// The `[y/N]` question before running `activations`.
+fn question(state: &AppState, activations: &[(HostId, Activation)]) -> String {
+    match activations {
+        [(id, _)] => format!("Activate {}?", util::one_line(&state.hosts[*id].host.name)),
+        many => format!("Activate these {} hosts?", many.len()),
+    }
+}
+
 /// The activation of a checked host, or why there is none.
 fn activation_of(state: &AppState, id: HostId) -> Result<Activation, String> {
     let h = &state.hosts[id];
@@ -1040,19 +1070,17 @@ fn activation_of(state: &AppState, id: HostId) -> Result<Activation, String> {
     actions::activation(&h.host, flake, &desired.path)
 }
 
-/// `<name>: <command>`, then where it runs and any warning.
+/// `<name>: <command>` (continuation lines indented), then where it runs
+/// and any warning.
 fn plan_text(host: &Host, activation: &Activation) -> String {
     let mut text = format!(
         "{}: {}\n  runs {}\n",
-        util::sanitize_terminal(&host.name),
-        util::sanitize_terminal(&activation.command),
+        util::one_line(&host.name),
+        command_text(&activation.command, ""),
         runs_on(host, activation.runs_on)
     );
     if let Some(warning) = &activation.warning {
-        text.push_str(&format!(
-            "  warning: {}\n",
-            util::sanitize_terminal(warning)
-        ));
+        text.push_str(&format!("  warning: {}\n", util::one_line(warning)));
     }
     text
 }
@@ -1060,11 +1088,11 @@ fn plan_text(host: &Host, activation: &Activation) -> String {
 /// `here`, or `on <host> (<destination>)` (the destination only when it
 /// says more than the name).
 fn runs_on(host: &Host, runs_on: RunsOn) -> String {
-    let name = util::sanitize_terminal(&host.name);
+    let name = util::one_line(&host.name);
     match (runs_on, host.ssh()) {
         (RunsOn::Here, _) => "here".into(),
         (RunsOn::Remote, Some(ssh)) if ssh.destination != host.name => {
-            format!("on {name} ({})", util::sanitize_terminal(&ssh.destination))
+            format!("on {name} ({})", util::one_line(&ssh.destination))
         }
         (RunsOn::Remote, _) => format!("on {name}"),
     }
@@ -1076,13 +1104,7 @@ fn nothing_to_activate(state: &AppState) -> String {
         .hosts
         .iter()
         .filter(|h| !matches!(h.status(), Status::UpToDate | Status::Offline))
-        .map(|h| {
-            format!(
-                "{} ({})",
-                util::sanitize_terminal(&h.host.name),
-                h.status().label()
-            )
-        })
+        .map(|h| format!("{} ({})", util::one_line(&h.host.name), h.status().label()))
         .collect();
     if unchecked.is_empty() {
         "\nnothing to activate: up to date (--force activates anyway)\n".into()
@@ -1096,7 +1118,7 @@ fn nothing_to_activate(state: &AppState) -> String {
 
 /// The result of one activation, after its host was probed again.
 fn outcome_text(h: &HostState, ran: &io::Result<ExitStatus>) -> String {
-    let name = util::sanitize_terminal(&h.host.name);
+    let name = util::one_line(&h.host.name);
     let mut text = match ran {
         Ok(status) if status.success() => String::new(),
         Ok(status) => format!(
@@ -1112,7 +1134,7 @@ fn outcome_text(h: &HostState, ran: &io::Result<ExitStatus>) -> String {
             "{} {name}: {}: {}\n",
             status.icon(),
             status.label(),
-            failure.error.summary
+            util::one_line(&failure.error.summary)
         )),
         _ => text.push_str(&format!("{} {name} is {}\n", status.icon(), status.label())),
     }
@@ -1284,7 +1306,7 @@ fn eprint(text: &str) {
 }
 
 fn warn(message: &str) {
-    eprint(&format!("warning: {}\n", util::sanitize_terminal(message)));
+    eprint(&format!("warning: {}\n", util::one_line(message)));
 }
 
 #[cfg(test)]
@@ -1971,6 +1993,79 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    /// Every line of `text` that doesn't start with one of `starts`.
+    fn lines_not_starting_with<'a>(text: &'a str, starts: &[&str]) -> Vec<&'a str> {
+        text.lines()
+            .filter(|line| !line.is_empty() && !starts.iter().any(|s| line.starts_with(s)))
+            .collect()
+    }
+
+    #[test]
+    fn names_from_a_flake_cannot_forge_lines() {
+        let evil = "evil\nweb2: rm -rf ~\n==> activating web2";
+        let mut forged = host(evil);
+        if let Target::Ssh(ssh) = &mut forged.target {
+            ssh.destination = "jj@desk\n✓ desk is up to date".into();
+        }
+        forged.activate = Some("echo one\necho two\nweb3: rm -rf /".into());
+        let mut state = checked(vec![
+            forged,
+            host("unreachable\nweb4: skipped (up to date)"),
+        ]);
+        probed(&mut state, 0, Ok(at('a')));
+        evaluated(&mut state, 0, Ok(store('b')));
+        probed(
+            &mut state,
+            1,
+            Err(ProbeError {
+                kind: ProbeFailure::Unreachable,
+                error: ErrorInfo::msg("ssh: connect to\nweb5: forged"),
+            }),
+        );
+        evaluated(&mut state, 1, Ok(store('b')));
+
+        let plan = plan_activations(&state, &[0], false);
+        let flat = "evil web2: rm -rf ~ ==> activating web2";
+        assert_eq!(
+            plan.listing,
+            format!(
+                "\nunreachable web4: skipped (up to date): skipped (unreachable)\n\
+                 {flat}: echo one\n    echo two\n    web3: rm -rf /\n  \
+                 runs on {flat} (jj@desk ✓ desk is up to date)\n"
+            )
+        );
+        assert_eq!(
+            question(&state, &plan.activations),
+            format!("Activate {flat}?")
+        );
+        let outcome = outcome_text(&state.hosts[1], &Ok(ExitStatus::from_raw(0)));
+        assert_eq!(
+            outcome,
+            "? unreachable web4: skipped (up to date): unreachable: ssh: connect to web5: forged\n"
+        );
+        let nothing = nothing_to_activate(&state);
+        assert!(
+            lines_not_starting_with(&nothing, &["nothing to activate: "]).is_empty(),
+            "{nothing:?}"
+        );
+        let unmatched = select(vec![host(evil)], &patterns(&["x"])).unwrap_err();
+        assert!(!unmatched.contains('\n'), "{unmatched:?}");
+        probed(
+            &mut state,
+            0,
+            Ok(ProbeReport {
+                none_reason: Some("no profile\nerror: forged".into()),
+                ..ProbeReport::default()
+            }),
+        );
+        let why = diff_inputs(&state.hosts[0]).unwrap_err();
+        assert_eq!(
+            why,
+            format!("{flat} has no generation to compare: no profile error: forged")
+        );
+        assert_eq!(build_place(&state.hosts[0].host), format!("on {flat}"));
     }
 
     #[test]

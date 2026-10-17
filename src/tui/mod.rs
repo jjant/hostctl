@@ -504,16 +504,8 @@ async fn suspended(
     after: After,
     signals: &mut Signals,
 ) -> Suspended {
-    let name = util::sanitize_terminal(&host.name);
-    let _ = write_stdout(&format!(
-        "hostctl: {} {name} {}\n$ {}\n\n",
-        match after {
-            After::Reprobe => "activating",
-            After::Rediff => "building the new generation of",
-        },
-        place(host),
-        util::sanitize_terminal(command),
-    ));
+    let name = util::one_line(&host.name);
+    let _ = write_stdout(&announcement(host, command, after));
     let ran = tokio::select! {
         biased;
         sig = signals.recv() => match sig {
@@ -522,7 +514,7 @@ async fn suspended(
         },
         prepared = engine.prepare_interactive(host, command) => match prepared {
             Err(e) => {
-                let _ = write_stdout(&format!("{}\n", e.detail));
+                let _ = write_stdout(&format!("  {}\n", e.detail.replace('\n', "\n  ")));
                 Ran::NotRun(e.summary)
             }
             Ok(spec) => {
@@ -553,13 +545,29 @@ async fn suspended(
     Suspended { ran, quit }
 }
 
+/// What runs where, before a suspended command: `hostctl: activating
+/// <host> on <host>`, then `$ <command>` (its continuation lines
+/// indented, so none passes for a line of hostctl's own).
+fn announcement(host: &Host, command: &str, after: After) -> String {
+    format!(
+        "hostctl: {} {} {}\n$ {}\n\n",
+        match after {
+            After::Reprobe => "activating",
+            After::Rediff => "building the new generation of",
+        },
+        util::one_line(&host.name),
+        place(host),
+        util::sanitize_terminal(command).replace('\n', "\n    "),
+    )
+}
+
 /// `here`, or `on <host>` (`(<destination>)` when it says more).
 fn place(host: &Host) -> String {
-    let name = util::sanitize_terminal(&host.name);
+    let name = util::one_line(&host.name);
     match host.ssh() {
         _ if crate::actions::runs_here(host) => "here".into(),
         Some(ssh) if ssh.destination != host.name => {
-            format!("on {name} ({})", util::sanitize_terminal(&ssh.destination))
+            format!("on {name} ({})", util::one_line(&ssh.destination))
         }
         _ => format!("on {name}"),
     }
@@ -570,7 +578,7 @@ fn ran_text(ran: &Ran) -> String {
     match ran {
         Ran::Exited(status) if status.success() => "done".into(),
         Ran::Exited(status) => format!("failed ({})", status_text(status)),
-        Ran::NotRun(why) => format!("not run: {}", util::sanitize_terminal(why)),
+        Ran::NotRun(why) => format!("not run: {}", util::one_line(why)),
     }
 }
 
@@ -806,6 +814,24 @@ mod tests {
         let mut pushed = ssh_host("web2", Kind::Nixos, "web2");
         pushed.activate_on = ActivateOn::Local;
         assert_eq!(place(&pushed), "here");
+    }
+
+    #[test]
+    fn announcements_keep_names_on_their_line() {
+        let host = ssh_host(
+            "evil\nhostctl: web2: done.",
+            Kind::HomeManager,
+            "web1\n$ rm -rf ~",
+        );
+        assert_eq!(
+            announcement(&host, "echo one\nhostctl: web3: done.", After::Reprobe),
+            "hostctl: activating evil hostctl: web2: done. on evil hostctl: web2: done. \
+             (web1 $ rm -rf ~)\n$ echo one\n    hostctl: web3: done.\n\n"
+        );
+        assert_eq!(
+            ran_text(&Ran::NotRun("upload failed\nhostctl: web1: done".into())),
+            "not run: upload failed hostctl: web1: done"
+        );
     }
 
     #[test]

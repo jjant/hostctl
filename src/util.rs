@@ -418,6 +418,18 @@ pub fn sanitize_terminal(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// [`sanitize_terminal`] for text that must stay on one line (names,
+/// destinations, labels in messages and prompts): line breaks and tabs
+/// become spaces too, so it can't start lines of its own.
+pub fn one_line(s: &str) -> Cow<'_, str> {
+    let clean = sanitize_terminal(s);
+    if clean.contains(['\n', '\t']) {
+        Cow::Owned(clean.replace(['\n', '\t'], " "))
+    } else {
+        clean
+    }
+}
+
 /// 64-bit FNV-1a: a tiny stable hash for file names and cache keys (not
 /// for security).
 pub fn fnv1a64(data: &[u8]) -> u64 {
@@ -648,6 +660,15 @@ mod tests {
                 "{c:?}"
             );
         }
+    }
+
+    #[test]
+    fn one_line_text_never_breaks_the_line() {
+        assert!(matches!(one_line("web1"), Cow::Borrowed("web1")));
+        assert_eq!(one_line("evil\nweb2: rm -rf ~"), "evil web2: rm -rf ~");
+        assert_eq!(one_line("a\tb\r\nc"), "a b\\u{d} c");
+        assert_eq!(one_line("x\u{1b}[2Jy\n"), "x\\u{1b}[2Jy ");
+        assert_eq!(one_line("ünï ✓"), "ünï ✓");
     }
 
     #[test]
