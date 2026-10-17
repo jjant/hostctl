@@ -43,8 +43,10 @@ const DETAILS_MIN: u16 = 5;
 const MAX_ERROR_LINES: usize = 400;
 
 /// The dashboard (DESIGN.md "TUI"):
-/// - header: primary flake `@ rev · age` (stale / lock warnings), counts,
-///   and while a check runs its progress (`⠋ checking 3/12`);
+/// - header: primary flake `@ rev · age` (`stale` badge, lock warning),
+///   counts, and while a check runs its progress (`⠋ checking 3/12`);
+///   under it, when there are any, why flakes are stale and the errors not
+///   tied to a host (the latest, `+N more`);
 /// - hosts table: HOST (• local, •? assumed) · STATUS (icon + label, or
 ///   spinner + activity + elapsed) · GEN · ACTIVATED · DETAIL (drift,
 ///   reason, note, badges), + KIND when wide; shrink order: DETAIL
@@ -212,7 +214,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, ctx: &Ctx) {
     }
 }
 
-/// The header (and the global error line) at the top, the footer at the
+/// The header (and the line of [`problems`]) at the top, the footer at the
 /// bottom; returns what is left in between.
 fn draw_chrome(frame: &mut Frame, area: Rect, ctx: &Ctx, hints: &[Hint]) -> Rect {
     let mut body = area;
@@ -222,10 +224,11 @@ fn draw_chrome(frame: &mut Frame, area: Rect, ctx: &Ctx, hints: &[Hint]) -> Rect
         Paragraph::new(header_line(ctx, usize::from(header.width))),
         header,
     );
-    if !ctx.app.state.errors.is_empty() && body.height > 2 {
+    let problems = problems(ctx);
+    if !problems.is_empty() && body.height > 2 {
         let errors = take_top(&mut body, 1);
         frame.render_widget(
-            Paragraph::new(errors_line(ctx, usize::from(errors.width))),
+            Paragraph::new(errors_line(ctx, problems, usize::from(errors.width))),
             errors,
         );
     }
@@ -402,8 +405,10 @@ fn flake_spans(ctx: &Ctx, flake: &FlakeState, label: &str, with_age: bool) -> Ve
                 let age = format!(" · {}", util::format_ago(at, ctx.now_unix));
                 spans.push(Span::styled(age, t.dim()));
             }
-            if let Some(why) = &info.stale {
-                spans.push(Span::styled(format!(" · stale: {}", flat(why)), t.warn()));
+            // Just the badge: reasons can be long (the line under the
+            // header and the details say why).
+            if info.stale.is_some() {
+                spans.push(Span::styled(" · stale", t.warn()));
             }
             if info.lock_outdated {
                 spans.push(Span::styled(" · flake.lock out of date", t.warn()));
@@ -474,19 +479,40 @@ fn status_counts(ctx: &Ctx, compact: bool) -> Vec<Span<'static>> {
     spans
 }
 
-fn errors_line(ctx: &Ctx, width: usize) -> Line<'static> {
-    let errors = &ctx.app.state.errors;
+/// What the line under the header says, least recent first: why each stale
+/// flake is stale (the header only has a badge), then the problems not
+/// tied to a host.
+fn problems(ctx: &Ctx) -> Vec<Span<'static>> {
+    let state = &ctx.app.state;
+    let primary = state.primary_flake().map(|f| f.url.as_str());
+    let mut problems = Vec::new();
+    for flake in &state.flakes {
+        if let Some(Ok(info)) = flake.info.get()
+            && let Some(why) = &info.stale
+        {
+            let text = if primary == Some(flake.url.as_str()) {
+                format!("! stale: {}", flat(why))
+            } else {
+                format!("! {} · stale: {}", flat(&flake.url), flat(why))
+            };
+            problems.push(Span::styled(text, ctx.t.warn()));
+        }
+    }
+    for error in &state.errors {
+        let text = format!("! {}", flat(&error.summary));
+        problems.push(Span::styled(text, ctx.t.error()));
+    }
+    problems
+}
+
+/// The latest of `problems`, and how many more there are.
+fn errors_line(ctx: &Ctx, mut problems: Vec<Span<'static>>, width: usize) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
-    if let Some(last) = errors.last() {
-        spans.push(Span::styled(
-            format!("! {}", flat(&last.summary)),
-            ctx.t.error(),
-        ));
-        if errors.len() > 1 {
-            spans.push(Span::styled(
-                format!(" (+{} more)", errors.len() - 1),
-                ctx.t.dim(),
-            ));
+    let more = problems.len().saturating_sub(1);
+    if let Some(last) = problems.pop() {
+        spans.push(last);
+        if more > 0 {
+            spans.push(Span::styled(format!(" (+{more} more)"), ctx.t.dim()));
         }
     }
     Line::from(fit(spans, width))
@@ -1017,17 +1043,26 @@ fn details_lines(ctx: &Ctx, id: HostId, width: usize) -> Vec<Line<'static>> {
         error_detail(t, e, width, &mut out);
     }
     let flake = app.state.flake_info(&h.host.flake);
-    if app
+    // Another flake than the header's, or why the resolution is stale.
+    let other = app
         .state
         .primary_flake()
-        .is_some_and(|p| p.url != h.host.flake)
-    {
-        let mut value = vec![Span::raw(flat(&h.host.flake).into_owned())];
-        if let Some(info) = flake {
-            value.push(Span::styled(
-                format!(" @ {}", flat(&info.short_rev())),
-                t.dim(),
-            ));
+        .is_some_and(|p| p.url != h.host.flake);
+    let stale = flake.and_then(|info| info.stale.as_deref());
+    if other || stale.is_some() {
+        let mut value = Vec::new();
+        if other {
+            value.push(Span::raw(flat(&h.host.flake).into_owned()));
+            if let Some(info) = flake {
+                value.push(Span::styled(
+                    format!(" @ {}", flat(&info.short_rev())),
+                    t.dim(),
+                ));
+            }
+        }
+        if let Some(why) = stale {
+            let sep = if value.is_empty() { "" } else { " · " };
+            value.push(Span::styled(format!("{sep}stale: {}", flat(why)), t.warn()));
         }
         kv("flake", value, &mut out);
     }
@@ -2337,6 +2372,7 @@ mod tests {
     use super::*;
     use crate::config::Kind;
     use crate::model::{AppState, Desired, ErrorInfo, Event};
+    use crate::nix::FlakeInfo;
     use crate::tui::app::testing::*;
 
     const SIZES: [(u16, u16); 4] = [(120, 32), (80, 24), (60, 20), (40, 10)];
@@ -2843,6 +2879,54 @@ mod tests {
         );
     }
 
+    /// What GitHub's rate limit makes a resolution's stale reason.
+    const RATE_LIMITED: &str = "unable to download \
+        'https://api.github.com/repos/jjant/nix-config/commits/HEAD': HTTP error 403 \
+        (API rate limit exceeded) (configure access-tokens = github.com=<token> in nix.conf)";
+
+    #[test]
+    fn a_stale_flake_gets_a_badge_and_its_reason_goes_under_the_header() {
+        let mut s = mixed();
+        let mut info = flake_info();
+        info.stale = Some(RATE_LIMITED.into());
+        s.apply(
+            400,
+            Event::FlakeFinished {
+                url: FLAKE.into(),
+                result: Ok(info),
+            },
+        );
+        let now = s.at(12_000);
+        let app = App::new(s.state, false);
+        let terminal = render(&app, (120, 32), now);
+        let lines = text(terminal.backend().buffer());
+        assert!(
+            lines[0].starts_with(" hostctl  github:jjant/nix-config @ 42ea902 · 2h ago · stale "),
+            "{:?}",
+            lines[0]
+        );
+        assert!(lines[0].contains("⠋ checking 11/12"), "{:?}", lines[0]);
+        assert_eq!(
+            lines[1].trim_end(),
+            format!(" ! stale: {}…", &RATE_LIMITED[..109])
+        );
+        assert!(lines[2].starts_with('╭'));
+        // The whole reason is in the details of each host of that flake.
+        let details = details_text(&app, "al2-aarch64", 100, now);
+        let flake = details
+            .iter()
+            .position(|l| l.starts_with("flake "))
+            .expect("a flake line");
+        assert_eq!(
+            details[flake..flake + 3],
+            [
+                "flake    stale: unable to download 'https://api.github.com/repos/jjant/nix-config/commits/HEAD': ",
+                "         HTTP error 403 (API rate limit exceeded) (configure access-tokens = github.com=<token> in ",
+                "         nix.conf)",
+            ]
+        );
+    }
+
     #[test]
     fn header_shows_resolution_problems() {
         let mut s = mixed();
@@ -2855,15 +2939,22 @@ mod tests {
                 url: FLAKE.into(),
                 result: Ok(info),
             },
-        )
-        .apply(11_000, Event::RunFinished);
+        );
         let now = s.at(12_000);
         let app = App::new(s.state.clone(), false);
         let header = line_text(&header_line(&ctx(&app, now), 140));
         assert!(
-            header.contains("github:jjant/nix-config @ 42ea902 · 2h ago · stale: rate limited by GitHub · flake.lock out of date"),
+            header.contains(
+                " hostctl  github:jjant/nix-config @ 42ea902 · 2h ago · stale · flake.lock out of date "
+            ),
             "{header}"
         );
+        let problems = line_text(&errors_line(
+            &ctx(&app, now),
+            problems(&ctx(&app, now)),
+            140,
+        ));
+        assert_eq!(problems, " ! stale: rate limited by GitHub");
         // A second flake is mentioned; a failed resolution is shown in red.
         let mut other = ssh_host("lab", Kind::Nixos, "lab");
         other.flake = "git+ssh://git@example.com/lab".into();
@@ -2894,6 +2985,51 @@ mod tests {
             flake_line.as_deref(),
             Some("flake    git+ssh://git@example.com/lab")
         );
+    }
+
+    #[test]
+    fn the_line_under_the_header_has_stale_flakes_then_errors() {
+        let mut lab = ssh_host("lab", Kind::Nixos, "lab");
+        lab.flake = "git+ssh://git@example.com/lab".into();
+        let mut s = Script::new(vec![ssh_host("web1", Kind::Nixos, "web1"), lab]);
+        for (url, why) in [
+            (FLAKE, "rate limited by GitHub"),
+            ("git+ssh://git@example.com/lab", "unable to download"),
+        ] {
+            let info = FlakeInfo {
+                flake: url.into(),
+                stale: Some(why.into()),
+                ..flake_info()
+            };
+            s.apply(
+                10,
+                Event::FlakeFinished {
+                    url: url.into(),
+                    result: Ok(info),
+                },
+            );
+        }
+        let now = s.at(100);
+        let mut app = App::new(s.state, false);
+        let line =
+            |app: &App| line_text(&errors_line(&ctx(app, now), problems(&ctx(app, now)), 120));
+        assert_eq!(
+            line(&app),
+            " ! git+ssh://git@example.com/lab · stale: unable to download (+1 more)"
+        );
+        let lab = details_text(&app, "lab", 100, now);
+        assert!(
+            lab.contains(
+                &"flake    git+ssh://git@example.com/lab @ 42ea902 · stale: unable to download"
+                    .into()
+            ),
+            "{lab:?}"
+        );
+        app.state.apply(
+            Event::Error(ErrorInfo::msg("ssh.command \"ssh\" can't be run")),
+            now,
+        );
+        assert_eq!(line(&app), " ! ssh.command \"ssh\" can't be run (+2 more)");
     }
 
     #[test]
