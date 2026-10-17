@@ -3,6 +3,7 @@
 //! DESIGN.md describes the architecture.
 
 pub mod actions;
+pub mod cache;
 pub mod closure;
 pub mod config;
 pub mod exec;
