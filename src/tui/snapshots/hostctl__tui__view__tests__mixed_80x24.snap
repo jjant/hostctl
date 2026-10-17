@@ -18,7 +18,7 @@ expression: terminal.backend()
 "│   web3           ✗ outdated         77  30m ago    same rev, different build │"
 "│   web4           ✓ up to date        5  1mo ago                              │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
-"╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.d…──╮"
+"╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.… ──╮"
 "│ current  aaaaaaaa-home-manager-generation · gen 93 · activated 4mo ago       │"
 "│ desired  bbbbbbbb-home-manager-generation · 42ea902                          │"
 "│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                           │"

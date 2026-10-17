@@ -14,7 +14,7 @@ expression: terminal.backend()
 "│   mac-m1         – offline         reachable only from … │"
 "│   pi             ? unreachable     ssh: Could not resol… │"
 "╰─────────────────────────────────────────────── 1–8 of 12 ╯"
-"╭ al2-aarch64 · home-manager · x86_64-linux · devhost-de…──╮"
+"╭ al2-aarch64 · home-manager · x86_64-linux · devhost-d… ──╮"
 "│ current  aaaaaaaa-home-manager-generation · gen 93 ·     │"
 "│          activated 4mo ago                               │"
 "│ desired  bbbbbbbb-home-manager-generation · 42ea902      │"

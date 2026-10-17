@@ -799,8 +799,8 @@ fn draw_hosts(
     let mut block = panel(t);
     let info = table_info(ctx, visible.len());
     if !info.is_empty() {
-        let info = fit(info, usize::from(area.width.saturating_sub(4)));
-        block = block.title_top(Line::from(info).right_aligned());
+        let info = title(info, usize::from(area.width.saturating_sub(4)));
+        block = block.title_top(info.right_aligned());
     }
     let inner = block.inner(area);
     if visible.is_empty() {
@@ -972,11 +972,11 @@ fn scroll_offset(previous: usize, selected: Option<usize>, len: usize, rows: usi
 
 fn draw_details(frame: &mut Frame, area: Rect, ctx: &Ctx, id: HostId) {
     let (h, t) = (ctx.host(id), ctx.t);
-    let title = fit(
+    let title = title(
         details_title(ctx, h),
         usize::from(area.width.saturating_sub(4)),
     );
-    let mut block = panel(t).title_top(Line::from(title));
+    let mut block = panel(t).title_top(title);
     let inner = block.inner(area);
     let lines = details_lines(ctx, id, usize::from(inner.width));
     let height = usize::from(inner.height);
@@ -1364,11 +1364,11 @@ fn draw_diff_view(frame: &mut Frame, area: Rect, ctx: &Ctx, id: HostId) {
         _ => &DIFF_HINTS,
     };
     let body = draw_chrome(frame, area, ctx, hints);
-    let title = fit(
+    let title = title(
         diff_title(ctx, h),
         usize::from(body.width.saturating_sub(4)),
     );
-    let block = panel(t).title_top(Line::from(title));
+    let block = panel(t).title_top(title);
     if let (false, Some(Ok(DiffOutcome::Diff { diff }))) = (h.diff.is_running(), h.diff.get()) {
         draw_changes(frame, body, block, ctx, diff);
         return;
@@ -1811,12 +1811,12 @@ fn draw_confirm(frame: &mut Frame, area: Rect, ctx: &Ctx, confirm: &Confirm) {
     }
     let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
     let rect = centered(area, width, height);
-    let title = fit(
+    let title = title(
         vec![Span::styled(
             format!(" {} ", flat(&confirm.title)),
             t.bold(),
         )],
-        usize::from(width.saturating_sub(2)),
+        usize::from(width.saturating_sub(4)),
     );
     let keys = Line::from(vec![
         Span::raw(" "),
@@ -1826,7 +1826,7 @@ fn draw_confirm(frame: &mut Frame, area: Rect, ctx: &Ctx, confirm: &Confirm) {
         Span::styled(" cancel ", t.dim()),
     ])
     .right_aligned();
-    let block = overlay(t).title_top(Line::from(title)).title_bottom(keys);
+    let block = overlay(t).title_top(title).title_bottom(keys);
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
@@ -2057,6 +2057,24 @@ fn panel(t: Theme) -> Block<'static> {
         // Titles sit on the border; don't let them inherit its gray.
         .title_style(Style::reset())
         .padding(Padding::horizontal(1))
+}
+
+/// A title for a pane's border: `spans` (which start and end with a space)
+/// in at most `max` columns. Cut, they still end with a space, so the `…`
+/// doesn't run into the border.
+fn title(mut spans: Vec<Span<'static>>, max: usize) -> Line<'static> {
+    if spans_width(&spans) > max {
+        if let Some(last) = spans.last_mut()
+            && let Some(kept) = last.content.strip_suffix(' ')
+        {
+            last.content = kept.to_string().into();
+        }
+        spans = fit(spans, max.saturating_sub(1));
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+    }
+    Line::from(spans)
 }
 
 /// A box drawn over the dashboard: same shape, brighter border.
@@ -2810,6 +2828,59 @@ mod tests {
                 let (mut app, now) = make();
                 app.detail_scroll = u16::MAX;
                 render(&app, size, now);
+            }
+        }
+    }
+
+    #[test]
+    fn cut_titles_keep_a_space_before_the_border() {
+        let (app, now) = mixed_app();
+        let terminal = render(&app, (80, 24), now);
+        let lines = text(terminal.backend().buffer());
+        assert_eq!(
+            lines[16],
+            "╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.… ──╮"
+        );
+        // Every pane and box, at every width: left titles, right-aligned
+        // ones (the filter), the diff's, the confirmation's.
+        let scenarios: Vec<fn() -> (App, Instant)> = vec![
+            mixed_app,
+            || {
+                let (mut app, now) = mixed_app();
+                app.filter = "x".repeat(60);
+                (app, now)
+            },
+            || {
+                let mut s = mixed();
+                s.diffed(0, 800, Ok(DiffOutcome::DesiredMissing));
+                let now = s.at(12_000);
+                let mut app = App::new(s.state, false);
+                app.mode = Mode::Diff { id: 0, scroll: 0 };
+                (app, now)
+            },
+            || {
+                let long = "a-host-with-a-really-quite-long-name-for-a-title";
+                let mut s = Script::new(vec![local_host(long, Kind::HomeManager)]);
+                s.flake(10)
+                    .probed(0, 10, report(path('a', "home-manager-generation"), 3, 0))
+                    .evaluated(0, 20, desired(path('b', "home-manager-generation"), false));
+                let now = s.at(100);
+                let mut app = App::new(s.state, false);
+                app.on_key(key('a'), now);
+                assert!(matches!(app.mode, Mode::Confirm(_)));
+                (app, now)
+            },
+        ];
+        for make in &scenarios {
+            for width in 40..=120 {
+                let (app, now) = make();
+                let terminal = render(&app, (width, 24), now);
+                for line in text(terminal.backend().buffer()) {
+                    assert!(
+                        !line.contains("…─") && !line.contains("…╮") && !line.contains("…╯"),
+                        "{width}: {line:?}"
+                    );
+                }
             }
         }
     }

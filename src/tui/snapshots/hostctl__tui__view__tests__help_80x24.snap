@@ -18,7 +18,7 @@ expression: terminal.backend()
 "│   web3     │ s         sort                ✗ outdated           │erent build │"
 "│   web4     │ J K       scroll details      ○ not activated      │            │"
 "╰────────────│ esc       clear filter        ! failed             │────────────╯"
-"╭ al2-aarch64│ q         quit                ? unreachable        │b7c5f39.d…──╮"
+"╭ al2-aarch64│ q         quit                ? unreachable        │b7c5f39.… ──╮"
 "│ current  aa│                               – offline            │o ago       │"
 "│ desired  bb│                               ⠋ checking           │            │"
 "│ drift    on│                               • this machine       │            │"

@@ -3,7 +3,7 @@ source: src/tui/view.rs
 expression: terminal.backend()
 ---
 " nix-config @ 42ea902           ⠋ 11/12 "
-"╭ al2-aarch64  aaaaaaaa → bbbbbbbb-h…──╮"
+"╭ al2-aarch64  aaaaaaaa → bbbbbbbb-… ──╮"
 "│ desired generation missing — b to    │"
 "│ build on al2-aarch64                 │"
 "│                                      │"
