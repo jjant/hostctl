@@ -4028,7 +4028,7 @@ mod tests {
             .map(|line| format!("{}\n", line.trim_end()))
             .collect();
         for (name, doc) in [
-            ("README.md", include_str!("../../README.md")),
+            ("docs/reference.md", include_str!("../../docs/reference.md")),
             ("DESIGN.md", include_str!("../../DESIGN.md")),
         ] {
             assert!(

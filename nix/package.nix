@@ -33,6 +33,7 @@ rustPlatform.buildRustPackage {
       # The tests check the docs' pictures and examples against the program.
       ../README.md
       ../DESIGN.md
+      ../docs
     ];
   };
 

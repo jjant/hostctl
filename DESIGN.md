@@ -522,6 +522,18 @@ Placeholders are shell-quoted; `--` precedes destinations; flakes starting with
 `-` are rejected; remote scripts travel on stdin; uploaded activation scripts
 are private temp files.
 
+## Development
+
+```sh
+nix develop                     # cargo, clippy, rustfmt, rust-analyzer, cargo-nextest, cargo-insta,
+                                # nixfmt, and what the tests use (dash, zsh, fish, busybox, nix, git)
+cargo test                      # unit and integration tests; tests for missing shells are skipped
+HOSTCTL_TEST_NIX=1 cargo test   # also the tests against a real nix
+cargo insta review              # dashboard snapshots
+nix flake check -L              # everything (see Testing)
+nix fmt                         # format the Nix files
+```
+
 ## Testing
 
 - Unit tests next to each module (parsers, quoting, config, diff, reducer, keys).
