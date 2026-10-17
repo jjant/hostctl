@@ -267,7 +267,11 @@ pub enum Mux {
 }
 
 impl Mux {
-    /// The `-o` options selecting this mux.
+    /// The `-o` options selecting this mux. A private master also sends
+    /// keepalives (`ServerAliveInterval=5`, `ServerAliveCountMax=2`), so
+    /// that one whose connection died without a reset (a sleep, a VPN
+    /// change, a NAT drop) notices within seconds and exits, instead of
+    /// stalling every run over it until TCP gives up.
     pub fn options(&self) -> Vec<String> {
         match self {
             Mux::Private {
@@ -277,13 +281,13 @@ impl Mux {
                 "-o".into(),
                 "ControlMaster=auto".into(),
                 "-o".into(),
-                // ssh expands `%` tokens in ControlPath.
-                format!(
-                    "ControlPath={}",
-                    socket.to_string_lossy().replace('%', "%%")
-                ),
+                control_path_option(socket),
                 "-o".into(),
                 format!("ControlPersist={persist_secs}"),
+                "-o".into(),
+                "ServerAliveInterval=5".into(),
+                "-o".into(),
+                "ServerAliveCountMax=2".into(),
             ],
             Mux::Off => vec![
                 "-o".into(),
@@ -295,6 +299,15 @@ impl Mux {
             ],
         }
     }
+}
+
+/// `ControlPath=<socket>`, with the `%` ssh would expand as a token
+/// escaped.
+fn control_path_option(socket: &Path) -> String {
+    format!(
+        "ControlPath={}",
+        socket.to_string_lossy().replace('%', "%%")
+    )
 }
 
 /// Where hostctl's control sockets live: `$XDG_RUNTIME_DIR/hostctl/ssh`,
@@ -459,6 +472,28 @@ pub fn script_command(target: &Target, ssh: &SshConfig, mux: &Mux, script: &str)
 /// endpoint sees as `SSH_ORIGINAL_COMMAND`).
 pub fn raw_command(target: &SshTarget, ssh: &SshConfig, mux: &Mux, command: &str) -> CommandSpec {
     ssh_argv(ssh, target, UNATTENDED_OPTIONS, Some(mux)).arg(command)
+}
+
+/// Tell hostctl's master for `target` at `socket` to exit (`ssh -o
+/// ControlPath=<socket> -O exit … -- [user@]host`), e.g. one that stopped
+/// answering. `None` when the user's options set a ControlPath of their
+/// own: then the master in use isn't hostctl's to stop.
+pub fn exit_master_command(
+    target: &SshTarget,
+    ssh: &SshConfig,
+    socket: &Path,
+) -> Option<CommandSpec> {
+    let user = target
+        .options
+        .iter()
+        .chain(&ssh.options)
+        .map(String::as_str);
+    if sets_option(user, "ControlPath") {
+        return None;
+    }
+    let control_path = control_path_option(socket);
+    let defaults = ["-o", control_path.as_str(), "-O", "exit"];
+    Some(ssh_argv(ssh, target, &defaults, None))
 }
 
 /// The body of an interactive script: deletes itself (`$0`) when it was
@@ -1107,7 +1142,11 @@ mod tests {
                     "-o",
                     "ControlPath=/run/user/1/hostctl/ssh/0123456789abcdef",
                     "-o",
-                    "ControlPersist=600"
+                    "ControlPersist=600",
+                    "-o",
+                    "ServerAliveInterval=5",
+                    "-o",
+                    "ServerAliveCountMax=2"
                 ],
                 &["-p", "2222", "--", "jj@web1", "sh", "-s"],
             ])
@@ -1178,9 +1217,48 @@ mod tests {
     }
 
     #[test]
+    fn exit_master_argv() {
+        let t = target("ssh://jj@web1:2222", &["-i", "/k"]);
+        let socket = Path::new("/run/user/1/hostctl/ssh/0123456789abcdef");
+        let spec = exit_master_command(&t, &ssh(&["-F", "/cfg"]), socket).unwrap();
+        assert_eq!(spec.program, "ssh");
+        assert_eq!(
+            spec.args,
+            argv(&[
+                &["-i", "/k", "-F", "/cfg"],
+                &["-o", "ControlPath=/run/user/1/hostctl/ssh/0123456789abcdef"],
+                &["-O", "exit", "-p", "2222", "--", "jj@web1"],
+            ])
+        );
+        assert_eq!(spec.stdin, None);
+        // `%` survives ssh's token expansion.
+        let odd = exit_master_command(&t, &ssh(&[]), Path::new("/home/100%/s")).unwrap();
+        assert!(
+            odd.args.iter().any(|a| a == "ControlPath=/home/100%%/s"),
+            "{odd:?}"
+        );
+        // A ControlPath of the user's isn't hostctl's master to stop.
+        for theirs in [&["-o", "ControlPath=/mine"][..], &["-ocontrolpath /mine"]] {
+            let socket = Path::new("/s");
+            assert_eq!(exit_master_command(&t, &ssh(theirs), socket), None);
+            let host = target("web1", theirs);
+            assert_eq!(exit_master_command(&host, &ssh(&[]), socket), None);
+        }
+    }
+
+    #[test]
     fn options_the_user_set_are_not_repeated() {
         let t = target("web1", &["-oStrictHostKeyChecking yes"]);
-        let s = ssh(&["-o", "batchmode=no", "-o", "ControlPath=/mine", "-p", "22"]);
+        let s = ssh(&[
+            "-o",
+            "batchmode=no",
+            "-o",
+            "ControlPath=/mine",
+            "-p",
+            "22",
+            "-o",
+            "ServerAliveInterval=30",
+        ]);
         let spec = script_command(&Target::Ssh(t), &s, &private("/s/0123456789abcdef"), "");
         let args: Vec<&str> = spec.args.iter().map(String::as_str).collect();
         assert_eq!(
@@ -1193,6 +1271,8 @@ mod tests {
                 "ControlPath=/mine",
                 "-p",
                 "22",
+                "-o",
+                "ServerAliveInterval=30",
                 "-T",
                 "-o",
                 "ConnectTimeout=10",
@@ -1208,6 +1288,8 @@ mod tests {
                 "ControlMaster=auto",
                 "-o",
                 "ControlPersist=600",
+                "-o",
+                "ServerAliveCountMax=2",
                 "--",
                 "web1",
                 "sh",
@@ -1561,12 +1643,39 @@ mod tests {
             .arg("web1");
         let out = run_sh(&spec);
         assert_eq!(out.code, Some(0), "{}", out.stderr);
+        for want in [
+            "controlpath /run/user/1000/hostctl/ssh/100%-0123456789abcdef",
+            "serveraliveinterval 5",
+            "serveralivecountmax 2",
+        ] {
+            assert!(
+                out.stdout.lines().any(|l| l == want),
+                "{want}: {}",
+                out.stdout
+            );
+        }
+    }
+
+    #[test]
+    fn real_ssh_takes_the_exit_command() {
+        let Some(ssh_bin) = which("ssh") else {
+            eprintln!("skipping: ssh not on PATH");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("nothing-here");
+        let config = SshConfig {
+            command: ssh_bin.to_string_lossy().into_owned(),
+            ..ssh(&["-F", "/dev/null"])
+        };
+        let spec = exit_master_command(&target("web1", &[]), &config, &socket).unwrap();
+        // No master: it says so (and connects to nothing).
+        let out = run_sh(&spec);
+        assert_eq!(out.code, Some(255), "{}", out.stderr);
         assert!(
-            out.stdout
-                .lines()
-                .any(|l| l == "controlpath /run/user/1000/hostctl/ssh/100%-0123456789abcdef"),
+            out.stderr.contains("Control socket connect("),
             "{}",
-            out.stdout
+            out.stderr
         );
     }
 

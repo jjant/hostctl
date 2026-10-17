@@ -61,6 +61,10 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// longer): it reads whole closures, possibly over a slow link.
 const MIN_LISTING_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// `ssh -O exit` gets this long: a master answers it at once, even one
+/// whose connection is dead.
+const EXIT_MASTER_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// A transient ssh failure is retried after this many milliseconds,
 /// jittered so hosts that sshd's MaxStartups dropped together don't come
 /// back together.
@@ -316,12 +320,14 @@ impl Engine {
     ///   Exit 255 over a private master with a stderr that says nothing
     ///   (empty, or only a proxy's `Connection closed by UNKNOWN port
     ///   65535`) is retried once with [`crate::remote::Mux::Off`] to
-    ///   capture the reason; transient failures
-    ///   ([`crate::remote::is_transient_ssh_failure`]) are retried once
-    ///   after a short jittered delay. Error summaries are the line of
-    ///   stderr that says why (before a proxy's closing line); details name
-    ///   the command ([`CommandSpec::display`]), its cleaned stderr and
-    ///   [`crate::remote::ssh_hint`];
+    ///   capture the reason; so is a timeout without output over a private
+    ///   master that was already up, after that master is told to exit
+    ///   (`ssh -O exit`: its connection may have died without a reset);
+    ///   transient failures ([`crate::remote::is_transient_ssh_failure`])
+    ///   are retried once after a short jittered delay. Error summaries
+    ///   are the line of stderr that says why (before a proxy's closing
+    ///   line); details name the command ([`CommandSpec::display`]), its
+    ///   cleaned stderr and [`crate::remote::ssh_hint`];
     /// - `ProbeFinished.deployed` comes from [`Cache::deployed_rev`];
     /// - `nix` or `ssh` that can't be spawned at all is reported once as an
     ///   [`Event::Error`] naming the config key (`nix.command`/`ssh.command`),
@@ -986,7 +992,10 @@ impl Engine {
     /// Run what `command` builds for these ssh settings and mux on
     /// `target`. Over ssh: a slot of [`MAX_NEW_CONNECTIONS`] is held while
     /// the run opens a new connection, and a run with no output is retried
-    /// (each at most once) when ssh rejected `accept-new` (with
+    /// (each at most once) when it timed out over a private master that
+    /// was already up (unmultiplexed, after telling that master to exit:
+    /// its connection may have died without a reset, see
+    /// [`Self::exit_master`]), when ssh rejected `accept-new` (with
     /// [`STRICT_HOST_KEYS`] from then on, for every later run), when it
     /// exited 255 over the private master without saying why
     /// ([`says_nothing`]; unmultiplexed, to capture the reason
@@ -1009,6 +1018,7 @@ impl Engine {
         };
         let mut unmultiplexed = false;
         let (mut strict_retry, mut silent_retry, mut transient_retry) = (true, true, true);
+        let mut wedged_retry = true;
         loop {
             let ssh = self.ssh_config();
             let mux = if unmultiplexed {
@@ -1017,14 +1027,27 @@ impl Engine {
                 self.mux(ssh_target, &ssh)
             };
             let (spec, extra) = command(&ssh, &mux);
+            let opens = opens_connection(&mux);
             let result = {
-                let _slot = if opens_connection(&mux) {
+                let _slot = if opens {
                     self.inner.connections.acquire().await.ok()
                 } else {
                     None
                 };
                 self.run(spec.clone(), timeout).await
             };
+            if let Ok(out) = &result
+                && out.timed_out
+                && out.stdout.trim().is_empty()
+                && wedged_retry
+                && !opens
+                && let Mux::Private { socket, .. } = &mux
+            {
+                wedged_retry = false;
+                self.exit_master(ssh_target, &ssh, socket).await;
+                unmultiplexed = true;
+                continue;
+            }
             if let Ok(out) = &result
                 && !out.timed_out
                 && out.stdout.trim().is_empty()
@@ -1072,6 +1095,18 @@ impl Engine {
 
     fn mux(&self, target: &SshTarget, ssh: &SshConfig) -> Mux {
         remote::mux_for(target, ssh, self.control_dir())
+    }
+
+    /// Tell the private master at `socket` to exit (`ssh -O exit`; best
+    /// effort, for at most [`EXIT_MASTER_TIMEOUT`]) after a run over it
+    /// timed out without a word: its connection may have died without a
+    /// reset (a sleep, a VPN change, a NAT drop), which a master without
+    /// keepalives only notices when TCP gives up, some 15 minutes later.
+    /// Until then every run over it would time out the same way.
+    async fn exit_master(&self, target: &SshTarget, ssh: &SshConfig, socket: &Path) {
+        if let Some(spec) = remote::exit_master_command(target, ssh, socket) {
+            let _ = self.run(spec, Some(EXIT_MASTER_TIMEOUT)).await;
+        }
     }
 
     /// The control socket directory, created (mode 0700) on first use;
@@ -1731,7 +1766,8 @@ mod tests {
     /// What a call is, for scripting: `version`, `metadata <flake>`,
     /// `eval <attr>` / `eval-ro <attr>`, `hosts <locked>`, `probe <login>`,
     /// `closure <login>`, `upload <login>` (`<login>` is `local` for `sh -s`
-    /// here), `raw <login> <command>`, `interactive local`.
+    /// here), `raw <login> <command>`, `control <login> <command>` (`ssh
+    /// -O`), `interactive local`.
     fn key(spec: &CommandSpec) -> String {
         let args: Vec<&str> = spec.args.iter().map(String::as_str).collect();
         let stdin = spec.stdin.as_deref().unwrap_or_default();
@@ -1750,7 +1786,10 @@ mod tests {
                 let at = args.iter().position(|a| *a == "--").map_or(0, |i| i + 1);
                 let login = args.get(at).copied().unwrap_or("?");
                 let rest = args.get(at + 1..).unwrap_or_default();
-                if rest == ["sh", "-s"] {
+                if let Some(o) = args[..at].iter().position(|a| *a == "-O") {
+                    let command = args.get(o + 1).copied().unwrap_or("?");
+                    format!("control {login} {command}")
+                } else if rest == ["sh", "-s"] {
                     format!("{script} {login}")
                 } else {
                     format!("raw {login} {}", rest.join(" "))
@@ -3531,6 +3570,96 @@ error:
             "ssh failed without a message (exit 255)"
         );
         assert_eq!(fake.calls().len(), 1);
+    }
+
+    /// Make it look as if `engine`'s private master for `host` were up
+    /// (multiplexing on): its socket exists.
+    fn master_up(engine: &Engine, host: &Host) -> PathBuf {
+        let dir = engine.inner.control_dir.clone().expect("multiplexing");
+        let Some(target) = host.ssh() else {
+            unreachable!()
+        };
+        let Mux::Private { socket, .. } = remote::mux_for(target, &engine.config().ssh, Some(&dir))
+        else {
+            unreachable!()
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&socket, "").unwrap();
+        socket
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_master_that_stopped_answering_is_told_to_exit_and_bypassed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Fake::new();
+        // Over the master, nothing comes until the timeout (its connection
+        // died without a reset); without it, the host answers.
+        fake.on("probe web1", Reply::default().after(30_000))
+            .on("probe web1", running(&sp('a', "gen")).after(300))
+            .on(
+                "control web1 exit",
+                Reply::exit(0, "Exit request sent.\r\n"),
+            );
+        let Some(engine) = multiplexing(&fake, &tmp) else {
+            return;
+        };
+        let socket = master_up(&engine, &remote("web1"));
+        let report = probe(&engine, &remote("web1")).await.unwrap();
+        assert_eq!(report.current, Some(sp('a', "gen")));
+        let calls = fake.calls();
+        let keys: Vec<&str> = calls.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["probe web1", "control web1 exit", "probe web1"]);
+        assert!(calls[0].has("ControlMaster=auto"));
+        assert_eq!(calls[0].end, Some(20_000), "the probe timed out");
+        assert!(calls[1].has(&format!("ControlPath={}", socket.display())));
+        assert_eq!(calls[1].timeout, Some(EXIT_MASTER_TIMEOUT));
+        assert_eq!(calls[1].start, 20_000);
+        assert!(calls[2].has("ControlMaster=no") && calls[2].has("ControlPath=none"));
+        assert_eq!(calls[2].start, calls[1].end.unwrap());
+        assert_eq!(calls[2].timeout, Some(Duration::from_secs(20)));
+
+        // Once: what the retry says stands.
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Fake::new();
+        fake.on("probe web1", Reply::default().after(30_000)).on(
+            "control web1 exit",
+            Reply::exit(255, "Control socket connect: x\r\n"),
+        );
+        let Some(engine) = multiplexing(&fake, &tmp) else {
+            return;
+        };
+        master_up(&engine, &remote("web1"));
+        let error = probe(&engine, &remote("web1")).await.unwrap_err();
+        assert_eq!(
+            (error.kind, error.error.summary.as_str()),
+            (ProbeFailure::Unreachable, "timed out after 20s")
+        );
+        assert!(
+            error.error.detail.contains("ControlPath=none"),
+            "{}",
+            error.error.detail
+        );
+        assert_eq!(fake.calls().len(), 3);
+
+        // A new connection that timed out rode no master: no retry. Nor
+        // when the host answered something.
+        let partial = "hostctl-probe=1 nonce={nonce}\nplatform=x86_64-linux\n";
+        for (reply, up) in [
+            (Reply::default().after(30_000), false),
+            (Reply::ok(partial).after(30_000), true),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let fake = Fake::new();
+            fake.on("probe web1", reply);
+            let Some(engine) = multiplexing(&fake, &tmp) else {
+                return;
+            };
+            if up {
+                master_up(&engine, &remote("web1"));
+            }
+            assert!(probe(&engine, &remote("web1")).await.is_err());
+            assert_eq!(fake.keys(), ["probe web1"], "master up: {up}");
+        }
     }
 
     #[tokio::test(start_paused = true)]
