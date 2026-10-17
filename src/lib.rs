@@ -6,6 +6,7 @@ pub mod actions;
 pub mod cache;
 pub mod closure;
 pub mod config;
+pub mod engine;
 pub mod exec;
 pub mod local;
 pub mod model;
