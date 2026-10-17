@@ -326,6 +326,28 @@ impl Pty {
         }
     }
 
+    /// What the terminal shows now ([`Screen`]), if it is `cols` × `rows`.
+    pub fn screen(&self, cols: usize, rows: usize) -> Screen {
+        let mut screen = Screen::new(cols, rows);
+        screen.feed(&self.output());
+        screen
+    }
+
+    /// Wait (20 s at most) until a `cols` × `rows` terminal shows `text`
+    /// (on one row).
+    #[track_caller]
+    pub fn wait_for_screen(&self, cols: usize, rows: usize, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !self.screen(cols, rows).contains(text) {
+            assert!(
+                Instant::now() < deadline,
+                "{text:?} never showed up on the screen:\n{}",
+                self.screen(cols, rows).rows().join("\n")
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// The terminal's settings now.
     pub fn termios(&self) -> libc::termios {
         use std::os::fd::AsRawFd as _;
@@ -337,6 +359,117 @@ impl Pty {
             0
         );
         termios
+    }
+}
+
+/// Just enough of a terminal to see what the dashboard drew: text (every
+/// character one column), `\r`, `\n`, cursor positioning and moves, erasing
+/// (`CSI J`, `CSI K`); colors and modes are ignored, OSC strings skipped,
+/// and entering or leaving the alternate screen clears it.
+pub struct Screen {
+    grid: Vec<Vec<char>>,
+    row: usize,
+    col: usize,
+}
+
+impl Screen {
+    pub fn new(cols: usize, rows: usize) -> Screen {
+        Screen {
+            grid: vec![vec![' '; cols]; rows],
+            row: 0,
+            col: 0,
+        }
+    }
+
+    fn clear(&mut self, rows: std::ops::Range<usize>) {
+        for row in rows {
+            self.grid[row].fill(' ');
+        }
+    }
+
+    pub fn feed(&mut self, text: &str) {
+        let (rows, cols) = (self.grid.len(), self.grid[0].len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => self.col = 0,
+                '\n' => {
+                    if self.row + 1 == rows {
+                        self.grid.remove(0);
+                        self.grid.push(vec![' '; cols]);
+                    } else {
+                        self.row += 1;
+                    }
+                }
+                '\x1b' => match chars.next() {
+                    Some('[') => {
+                        let mut params = String::new();
+                        let end = loop {
+                            match chars.next() {
+                                Some(c) if ('@'..='~').contains(&c) => break c,
+                                Some(c) => params.push(c),
+                                None => return,
+                            }
+                        };
+                        let private = params.starts_with('?');
+                        let numbers: Vec<usize> = params
+                            .trim_start_matches('?')
+                            .split(';')
+                            .map(|n| n.parse().unwrap_or(0))
+                            .collect();
+                        let n = numbers[0].max(1);
+                        match end {
+                            'H' | 'f' => {
+                                self.row = (n - 1).min(rows - 1);
+                                self.col =
+                                    (numbers.get(1).copied().unwrap_or(1).max(1) - 1).min(cols - 1);
+                            }
+                            'A' => self.row = self.row.saturating_sub(n),
+                            'B' => self.row = (self.row + n).min(rows - 1),
+                            'C' => self.col = (self.col + n).min(cols - 1),
+                            'D' => self.col = self.col.saturating_sub(n),
+                            'J' if numbers[0] == 2 => self.clear(0..rows),
+                            'J' => {
+                                self.grid[self.row][self.col..].fill(' ');
+                                self.clear(self.row + 1..rows);
+                            }
+                            'K' => self.grid[self.row][self.col..].fill(' '),
+                            'h' | 'l' if private && numbers[0] == 1049 => self.clear(0..rows),
+                            _ => {}
+                        }
+                    }
+                    // OSC: up to BEL or ST.
+                    Some(']') => {
+                        while let Some(c) = chars.next() {
+                            if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                c if c.is_control() => {}
+                c => {
+                    if self.col < cols {
+                        self.grid[self.row][self.col] = c;
+                        self.col += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The rows, without trailing blanks.
+    pub fn rows(&self) -> Vec<String> {
+        self.grid
+            .iter()
+            .map(|row| row.iter().collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// Whether a row shows `text`.
+    pub fn contains(&self, text: &str) -> bool {
+        self.rows().iter().any(|row| row.contains(text))
     }
 }
 

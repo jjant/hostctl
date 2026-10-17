@@ -631,7 +631,7 @@ async fn dispatch(
         known,
     };
     match check {
-        Check::Tui { .. } => dashboard(setup, engine, selection).await,
+        Check::Tui { hosts } => dashboard(setup, engine, selection, &hosts).await,
         Check::Status { json, plain, .. } => {
             status(setup, engine, &selection, json, plain, signals).await
         }
@@ -643,6 +643,35 @@ async fn dispatch(
         }
         Check::Hosts { .. } => Ok(0),
     }
+}
+
+/// How the dashboard finds its hosts again on a refresh, as at the start
+/// (discovery and the inventory, the config, then `patterns`), when the
+/// flake has a say in them; failures say why rather than end anything.
+fn rediscovery(setup: &Setup, patterns: &[String]) -> Option<crate::tui::Rediscover> {
+    let config = &setup.config;
+    let flake = config.flake.clone()?;
+    if !config.discover && config.inventory.is_empty() {
+        return None;
+    }
+    let (config, local, patterns) = (config.clone(), setup.local.clone(), patterns.to_vec());
+    Some(Box::new(move |engine: Engine| {
+        let (config, local) = (config.clone(), local.clone());
+        let (flake, patterns) = (flake.clone(), patterns.clone());
+        Box::pin(async move {
+            let (info, flake_hosts) = engine
+                .discover(&flake)
+                .await
+                .map_err(|e| hosts_error(&flake, &e.summary))?;
+            let resolved = config
+                .resolve_hosts(Some(&flake_hosts), &local)
+                .map_err(|e| format!("{e:#}"))?;
+            Ok(crate::tui::Found {
+                hosts: select(resolved.hosts, &patterns)?,
+                known: vec![info],
+            })
+        })
+    }))
 }
 
 /// The hosts to check: discovery and the flake's inventory (when a flake
@@ -790,7 +819,12 @@ impl Selection {
     }
 }
 
-async fn dashboard(setup: &Setup, engine: &Engine, selection: Selection) -> Result<u8, Exit> {
+async fn dashboard(
+    setup: &Setup,
+    engine: &Engine,
+    selection: Selection,
+    patterns: &[String],
+) -> Result<u8, Exit> {
     let options = crate::tui::Options {
         refresh_interval: setup.config.ui.refresh_interval.non_zero(),
         color: setup.color,
@@ -803,6 +837,7 @@ async fn dashboard(setup: &Setup, engine: &Engine, selection: Selection) -> Resu
         selection.hosts,
         selection.known,
         options,
+        rediscovery(setup, patterns),
     )
     .await
     .map_err(|e| Exit::Trouble(format!("{e:#}")))

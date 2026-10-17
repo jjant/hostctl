@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, FutureExt as _, Shared, WeakShared};
 use futures_util::stream::FuturesUnordered;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{OnceCell, Semaphore, SemaphorePermit};
@@ -92,7 +92,7 @@ const INCOMPLETE: &str = "connection dropped or timed out after the host answere
 const MAX_DETAIL_STDERR: usize = 16 << 10;
 
 /// How much to trust cached flake resolutions.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Freshness {
     /// Reuse a resolution younger than `nix.refresh`, else `--refresh`.
     #[default]
@@ -144,7 +144,14 @@ struct Inner {
     /// An ssh rejected `StrictHostKeyChecking=accept-new` (OpenSSH < 7.6):
     /// every later ssh run passes [`STRICT_HOST_KEYS`].
     strict_host_keys: AtomicBool,
+    /// Resolutions in flight, by flake and [`Freshness`]: a check and the
+    /// discovery running beside it share one `nix flake metadata`. Weak:
+    /// once nobody awaits one, it is gone (and its process killed).
+    resolving: Mutex<HashMap<(String, Freshness), WeakShared<ResolveFuture>>>,
 }
+
+type ResolveResult = Result<FlakeInfo, ResolveError>;
+type ResolveFuture = BoxFuture<'static, ResolveResult>;
 
 impl Inner {
     fn save_cache(&self) {
@@ -200,6 +207,7 @@ impl Engine {
                 control_dir_ready: OnceLock::new(),
                 nix_version: OnceCell::new(),
                 strict_host_keys: AtomicBool::new(false),
+                resolving: Mutex::new(HashMap::new()),
             }),
             freshness,
         }
@@ -492,7 +500,36 @@ impl Engine {
 
     // ─── resolution ─────────────────────────────────────────────────────
 
-    async fn resolve_flake(&self, flake: &str) -> Result<FlakeInfo, ResolveError> {
+    /// [`Self::resolve_now`], shared: a caller resolving `flake` (with this
+    /// handle's [`Freshness`]) while another one is at it awaits that one's
+    /// result, so a check and the discovery beside it resolve once.
+    async fn resolve_flake(&self, flake: &str) -> ResolveResult {
+        let key = (flake.to_owned(), self.freshness);
+        let resolving: Resolving = {
+            let mut in_flight = self
+                .inner
+                .resolving
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            in_flight.retain(|_, weak| weak.upgrade().is_some());
+            match in_flight.get(&key).and_then(WeakShared::upgrade) {
+                Some(resolving) => resolving,
+                None => {
+                    let (engine, url) = (self.clone(), flake.to_owned());
+                    let resolving = async move { engine.resolve_now(&url).await }
+                        .boxed()
+                        .shared();
+                    if let Some(weak) = resolving.downgrade() {
+                        in_flight.insert(key, weak);
+                    }
+                    resolving
+                }
+            }
+        };
+        resolving.await
+    }
+
+    async fn resolve_now(&self, flake: &str) -> ResolveResult {
         let config = &self.inner.config;
         let cached = self.with_cache(|cache| cache.resolution(flake).cloned());
         match self.freshness {
@@ -522,7 +559,7 @@ impl Engine {
         let out = self
             .run(spec.clone(), timeout)
             .await
-            .map_err(ResolveError::Spawn)?;
+            .map_err(|error| ResolveError::Spawn(Arc::new(error)))?;
         let rate_limited =
             out.stderr.contains("HTTP error 403") || out.stderr.contains("rate limit");
         let parsed = if out.success() {
@@ -1231,11 +1268,16 @@ impl<'a> Run<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
 enum ResolveError {
     /// nix couldn't be spawned.
-    Spawn(io::Error),
+    Spawn(Arc<io::Error>),
     Failed(ErrorInfo),
 }
+
+/// A resolution in flight, which every caller resolving the same flake
+/// meanwhile awaits too ([`Engine::resolve_flake`]).
+type Resolving = Shared<ResolveFuture>;
 
 /// A run's last attempt: what ran, what built it, and what came of it.
 struct Attempt<T> {
@@ -4358,6 +4400,55 @@ error:
                 .values()
                 .any(|entry| entry.hosts.is_some())
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_and_discovery_beside_it_resolve_the_flake_once() {
+        let fake = world();
+        let locked = github(GITHUB, REV1).locked;
+        fake.on(&format!("hosts {locked}"), Reply::ok(HOSTS_JSON).after(70))
+            .on("probe web1", running(&sp('a', "home-manager-generation")))
+            .on(&format!("eval {}", attr("web1")), evaluates(&sp('a', "x")));
+        let engine = engine(&config(), Cache::in_memory(), &fake).with_freshness(Freshness::Force);
+        let hosts = ids(vec![remote("web1")]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (discovered, ()) =
+            tokio::join!(engine.discover(GITHUB), engine.check(&hosts, &[], &tx));
+        assert_eq!(discovered.unwrap().0, github(GITHUB, REV1));
+        let metadata = format!("metadata {GITHUB}");
+        assert_eq!(fake.calls_to(&metadata).len(), 1, "{:?}", fake.keys());
+        // The check reported the resolution it shared as its own.
+        let mut seen = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            seen.push(show(&event));
+        }
+        assert!(
+            seen.contains(&"flake- github:o/r 42ea902".to_string()),
+            "{seen:?}"
+        );
+        // Done, it isn't kept: the next one runs again.
+        engine.resolve(GITHUB).await.unwrap();
+        assert_eq!(fake.calls_to(&metadata).len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shared_resolution_nobody_awaits_any_more_is_cancelled() {
+        let fake = world();
+        let engine = engine(&config(), Cache::in_memory(), &fake).with_freshness(Freshness::Force);
+        tokio::select! {
+            _ = async { tokio::join!(engine.resolve(GITHUB), engine.resolve(GITHUB)) } => {
+                panic!("resolved in no time")
+            }
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        let calls = fake.calls_to(&format!("metadata {GITHUB}"));
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].cancelled, "{calls:?}");
+        // Another freshness is another resolution.
+        let auto = engine.with_freshness(Freshness::Auto);
+        let (forced, auto) = tokio::join!(engine.resolve(GITHUB), auto.resolve(GITHUB));
+        assert_eq!(forced, auto);
+        assert_eq!(fake.calls_to(&format!("metadata {GITHUB}")).len(), 3);
     }
 
     #[tokio::test(start_paused = true)]

@@ -14,6 +14,7 @@ use std::process::ExitStatus;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -24,6 +25,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt as _;
+use futures_util::future::LocalBoxFuture;
 use futures_util::stream::FuturesUnordered;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -50,6 +52,19 @@ pub struct Options {
 /// At most one frame per this long.
 const FRAME: Duration = Duration::from_millis(16);
 
+/// The hosts a refresh found again ([`Rediscover`]).
+pub struct Found {
+    pub hosts: Vec<Host>,
+    /// Flakes resolved on the way: the check doesn't resolve them again.
+    pub known: Vec<FlakeInfo>,
+}
+
+/// How a refresh finds the hosts again, on the engine it checks with: the
+/// flake's discovery and inventory (cached, and sharing the check's
+/// resolution of the flake), then the config and the patterns given.
+/// `Err` says why not; the hosts then stay as they were.
+pub type Rediscover = Box<dyn Fn(Engine) -> LocalBoxFuture<'static, Result<Found, String>>>;
+
 /// Run the dashboard until the user quits; returns the final state's
 /// [`AppState::exit_code`].
 ///
@@ -75,16 +90,21 @@ const FRAME: Duration = Duration::from_millis(16);
 /// Refreshes run on [`Engine::with_freshness`] (sharing the cache and the
 /// limits): `r` with [`Freshness::Force`], the timer with
 /// [`Freshness::Auto`] (which honors `nix.refresh`); both with
-/// [`Freshness::Offline`] under `options.offline`. A check that `Run`
-/// interrupted starts over once the command is done (which re-probes the
-/// host too). A signal (SIGINT, SIGQUIT, SIGTERM, SIGHUP) ends the
-/// dashboard as interrupted (exit 130).
+/// [`Freshness::Offline`] under `options.offline`. Beside a refresh's
+/// check, `rediscover` finds the hosts again; when they changed (the flake
+/// gained, lost or redefined some), that check makes way for one of the
+/// new list, which keeps what is known about the hosts that stayed the
+/// same and the selection by name. A check that `Run` interrupted starts
+/// over once the command is done (which re-probes the host too). A signal
+/// (SIGINT, SIGQUIT, SIGTERM, SIGHUP) ends the dashboard as interrupted
+/// (exit 130).
 pub async fn run(
     engine: Engine,
     state: AppState,
     hosts: Vec<(HostId, Host)>,
     known: Vec<FlakeInfo>,
     options: Options,
+    rediscover: Option<Rediscover>,
 ) -> anyhow::Result<u8> {
     let hosts = Rc::new(hosts);
     let (tx, rx) = mpsc::unbounded_channel();
@@ -100,6 +120,8 @@ pub async fn run(
         tx,
         rx,
         check,
+        rediscover,
+        discovery: None,
         jobs: FuturesUnordered::new(),
         events: None,
         refresh_interval: options.refresh_interval,
@@ -113,6 +135,7 @@ pub async fn run(
     let result = ui.run(&mut signals).await;
     // Dropping the work in flight kills its processes.
     ui.check = None;
+    ui.discovery = None;
     ui.jobs.clear();
     crate::live::save_cache(&ui.engine).await;
     result?;
@@ -120,6 +143,7 @@ pub async fn run(
 }
 
 type Work = Pin<Box<dyn Future<Output = ()>>>;
+type Discovery = LocalBoxFuture<'static, Result<Found, String>>;
 type Tty = Terminal<CrosstermBackend<Stdout>>;
 
 /// A check of `hosts` (already resolved flakes in `known`), as a future
@@ -161,6 +185,9 @@ struct Ui {
     tx: EventTx,
     rx: UnboundedReceiver<Event>,
     check: Option<Work>,
+    rediscover: Option<Rediscover>,
+    /// A refresh's search for the hosts, beside its check.
+    discovery: Option<Discovery>,
     /// Diffs and re-probes.
     jobs: FuturesUnordered<Work>,
     /// The terminal's input; `None` while suspended.
@@ -249,6 +276,11 @@ impl Ui {
                     self.check_ended();
                     dirty = true;
                 }
+                found = finished(&mut self.discovery) => {
+                    self.discovery = None;
+                    self.rediscovered(found).await;
+                    dirty = true;
+                }
                 Some(()) = self.jobs.next(), if !self.jobs.is_empty() => dirty = true,
                 () = tokio::time::sleep_until(wake.into()) => {
                     // The frame-rate wait is over (`dirty`), or it's time for a
@@ -258,6 +290,7 @@ impl Ui {
                             self.app.tick();
                         }
                         if self.check.is_none()
+                            && self.discovery.is_none()
                             && self.refresh_at.is_some_and(|at| Instant::now() >= at)
                         {
                             self.refresh(false).await;
@@ -350,17 +383,74 @@ impl Ui {
         if self.check.is_some() {
             return;
         }
+        if self.discovery.is_some() {
+            if manual {
+                self.app
+                    .flash("still reading the flake's hosts", Instant::now());
+            }
+            return;
+        }
         self.refresh_at = None;
         let engine = self
             .engine
             .with_freshness(refresh_freshness(manual, self.offline));
-        let mut check = start_check(&engine, &self.hosts, Vec::new(), &self.tx);
+        self.check_hosts(&engine, Vec::new()).await;
+        // The hosts again, beside the check (whose resolution of the flake
+        // it shares): the flake may have gained or lost some.
+        if let Some(rediscover) = &self.rediscover {
+            let mut discovery = rediscover(engine);
+            match futures_util::poll!(discovery.as_mut()) {
+                Poll::Ready(found) => self.rediscovered(found).await,
+                Poll::Pending => self.discovery = Some(discovery),
+            }
+        }
+    }
+
+    /// Start a check of the hosts (`known`: flakes already resolved) on
+    /// `engine`.
+    async fn check_hosts(&mut self, engine: &Engine, known: Vec<FlakeInfo>) {
+        let mut check = start_check(engine, &self.hosts, known, &self.tx);
         // Poll once so that its first events are on the next frame.
         if futures_util::poll!(check.as_mut()).is_pending() {
             self.check = Some(check);
         } else {
             self.check_ended();
         }
+    }
+
+    /// What a refresh's search for the hosts found. The same hosts: nothing
+    /// to do. Others: whatever runs for the old list stops, the state is
+    /// rebuilt for the new one ([`rebuilt`], [`App::replace_state`]) and
+    /// checked. Failing that, a flash says why, and the hosts stay.
+    async fn rediscovered(&mut self, found: Result<Found, String>) {
+        let now = Instant::now();
+        let Found { hosts, known } = match found {
+            Ok(found) => found,
+            Err(why) => {
+                let why = util::one_line(&why);
+                self.app.flash(format!("{why} (hosts unchanged)"), now);
+                return;
+            }
+        };
+        if hosts.iter().eq(self.hosts.iter().map(|(_, host)| host)) {
+            return;
+        }
+        // Dropping them kills their processes; what they sent is about the
+        // old list, so it goes there (and over with the hosts that stay).
+        self.check = None;
+        self.jobs.clear();
+        self.drain();
+        let state = rebuilt(&self.app.state, &hosts, &known, now);
+        let mut message = hosts_changed(&self.app.state, &state);
+        if self.app.replace_state(state) {
+            message.push_str(": confirm again");
+        }
+        self.app.flash(message, now);
+        self.hosts = Rc::new(hosts.into_iter().enumerate().collect());
+        let engine = self
+            .engine
+            .with_freshness(refresh_freshness(false, self.offline));
+        self.check_hosts(&engine, known).await;
     }
 
     /// Diff host `id` from its current to its desired generation.
@@ -407,6 +497,7 @@ impl Ui {
     /// dashboard (exit 130).
     fn interrupt(&mut self) {
         self.check = None;
+        self.discovery = None;
         self.jobs.clear();
         self.drain();
         self.app.state.apply(Event::Interrupted, Instant::now());
@@ -416,9 +507,10 @@ impl Ui {
     /// processes), as before an interactive command. Whether a check was
     /// running.
     fn cancel_work(&mut self) -> bool {
-        let checking = self.check.is_some();
+        let checking = self.check.is_some() || self.discovery.is_some();
         let busy = checking || !self.jobs.is_empty();
         self.check = None;
+        self.discovery = None;
         self.jobs.clear();
         self.drain();
         if busy {
@@ -481,11 +573,67 @@ fn repaint(terminal: &mut Tty) -> io::Result<()> {
     terminal.resize(ratatui::layout::Rect::new(0, 0, size.width, size.height))
 }
 
-/// `check` until it finishes; pending without one.
-async fn finished(check: &mut Option<Work>) {
-    match check {
-        Some(check) => check.await,
+/// `work` until it finishes; pending without any.
+async fn finished<T>(work: &mut Option<LocalBoxFuture<'static, T>>) -> T {
+    match work {
+        Some(work) => work.await,
         None => std::future::pending().await,
+    }
+}
+
+/// The state for `hosts`, found again: the hosts `old` had already (the
+/// same in every respect) keep what is known about them — nothing of
+/// theirs is in flight any more — new and redefined ones start afresh; the
+/// flakes `known` are resolved, the others keep what `old` knew of them.
+fn rebuilt(old: &AppState, hosts: &[Host], known: &[FlakeInfo], now: Instant) -> AppState {
+    let mut state = AppState::new(hosts.to_vec()).with_flakes(known, now);
+    for h in &mut state.hosts {
+        if let Some(same) = old.hosts.iter().find(|o| o.host == h.host) {
+            *h = same.clone();
+            h.probe.stop();
+            h.eval.stop();
+            h.diff.stop();
+        }
+    }
+    for flake in &mut state.flakes {
+        if flake.info.get().is_none()
+            && let Some(before) = old.flake(&flake.url)
+        {
+            flake.info = before.info.clone();
+            flake.info.stop();
+        }
+    }
+    state.run = old.run.clone();
+    state.config_path.clone_from(&old.config_path);
+    state.command.clone_from(&old.command);
+    state.errors.clone_from(&old.errors);
+    state.interrupted = old.interrupted;
+    state
+}
+
+/// The flash for a host list that changed: which hosts are new, which gone.
+fn hosts_changed(old: &AppState, new: &AppState) -> String {
+    let names = |state: &AppState| -> std::collections::BTreeSet<String> {
+        state
+            .hosts
+            .iter()
+            .map(|h| util::one_line(&h.host.name).into_owned())
+            .collect()
+    };
+    let (before, after) = (names(old), names(new));
+    let mut changes = Vec::new();
+    let added: Vec<&str> = after.difference(&before).map(String::as_str).collect();
+    if !added.is_empty() {
+        changes.push(format!("new: {}", added.join(", ")));
+    }
+    let gone: Vec<&str> = before.difference(&after).map(String::as_str).collect();
+    if !gone.is_empty() {
+        changes.push(format!("gone: {}", gone.join(", ")));
+    }
+    if changes.is_empty() {
+        "the flake's hosts changed".into()
+    } else {
+        format!("the flake's hosts changed ({})", changes.join("; "))
     }
 }
 
@@ -880,6 +1028,55 @@ mod tests {
         let mut release = key(KeyCode::Enter, KeyModifiers::NONE);
         release.kind = KeyEventKind::Release;
         assert!(!returns(&release));
+    }
+
+    #[test]
+    fn hosts_found_again_keep_what_is_known_about_them() {
+        let s = pending();
+        let mut old = s.state.clone();
+        let at = s.at(100);
+        old.command = "hostctl -c /x.toml".into();
+        old.hosts[0].probe.finish(
+            Err(crate::model::ProbeError {
+                kind: ProbeFailure::Unreachable,
+                error: crate::model::ErrorInfo::msg("no route"),
+            }),
+            at,
+        );
+        old.hosts[0].probe.start(at);
+        let kept = old.hosts[0].host.clone();
+        let mut redefined = old.hosts[1].host.clone();
+        redefined.note = Some("moved".into());
+        let new = ssh_host("web9", Kind::Nixos, "web9");
+        let hosts = vec![new.clone(), redefined.clone(), kept.clone()];
+        let state = rebuilt(&old, &hosts, &[], at);
+        assert_eq!(
+            state.hosts.iter().map(|h| &h.host).collect::<Vec<_>>(),
+            [&new, &redefined, &kept]
+        );
+        // The same host: its last probe, nothing in flight.
+        assert!(state.hosts[2].probe.get().is_some());
+        assert!(!state.hosts[2].busy());
+        // A redefined one is another host.
+        assert!(state.hosts[1].probe.get().is_none());
+        assert_eq!(state.command, "hostctl -c /x.toml");
+        assert_eq!(
+            hosts_changed(&old, &state),
+            format!(
+                "the flake's hosts changed (new: web9; gone: {})",
+                old.hosts
+                    .iter()
+                    .map(|h| h.host.name.as_str())
+                    .filter(|name| ![kept.name.as_str(), redefined.name.as_str()].contains(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        );
+        // Only redefined: the same names.
+        let before = rebuilt(&old, std::slice::from_ref(&redefined), &[], at);
+        redefined.note = None;
+        let after = rebuilt(&before, &[redefined], &[], at);
+        assert_eq!(hosts_changed(&before, &after), "the flake's hosts changed");
     }
 
     #[test]

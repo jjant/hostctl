@@ -165,6 +165,40 @@ impl App {
         }
     }
 
+    /// Swap in `state`, whose hosts may not be the current ones (the flake's
+    /// changed): the selection and an open diff view follow their host by
+    /// name; a confirmation is dropped unless its host is still exactly
+    /// the same (it would run what was confirmed for another definition).
+    /// Whether a confirmation was dropped.
+    pub fn replace_state(&mut self, state: AppState) -> bool {
+        let old = std::mem::replace(&mut self.state, state);
+        let new = &self.state;
+        let renumber = |id: HostId| {
+            let name = &old.hosts.get(id)?.host.name;
+            new.hosts.iter().position(|h| h.host.name == *name)
+        };
+        self.selected = self.selected.and_then(renumber);
+        let mut dropped = false;
+        self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Diff { id, scroll } => match renumber(id) {
+                Some(id) => Mode::Diff { id, scroll },
+                None => Mode::Normal,
+            },
+            Mode::Confirm(confirm) => {
+                let same = |id: HostId| old.hosts[confirm.id].host == new.hosts[id].host;
+                match renumber(confirm.id).filter(|&id| same(id)) {
+                    Some(id) => Mode::Confirm(Confirm { id, ..confirm }),
+                    None => {
+                        dropped = true;
+                        Mode::Normal
+                    }
+                }
+            }
+            mode => mode,
+        };
+        dropped
+    }
+
     /// Hosts shown, in display order: those matching the filter (a glob if
     /// it contains `*`, `?` or `[`, else a case-insensitive substring of the
     /// name), sorted by [`SortKey`] (ties by name).
@@ -1415,6 +1449,67 @@ mod tests {
             .position(|h| h.host.name == name)
             .expect("host exists");
         app.select(id);
+    }
+
+    /// `app`'s state with the hosts in `keep` only (in that order).
+    fn only(app: &App, keep: &[&str]) -> AppState {
+        let hosts = keep
+            .iter()
+            .map(|name| {
+                let h = app.state.hosts.iter().find(|h| h.host.name == *name);
+                h.expect("host exists").host.clone()
+            })
+            .collect();
+        AppState::new(hosts)
+    }
+
+    #[test]
+    fn a_new_host_list_keeps_the_selection_by_name() {
+        let (mut app, _) = mixed_app();
+        select(&mut app, "web2");
+        let state = only(&app, &["web3", "web2", "bigmem"]);
+        assert!(!app.replace_state(state));
+        assert_eq!(
+            app.selected()
+                .map(|id| app.state.hosts[id].host.name.as_str()),
+            Some("web2")
+        );
+        // An open diff view follows its host, or closes when it is gone.
+        select(&mut app, "bigmem");
+        app.mode = Mode::Diff { id: 2, scroll: 4 };
+        app.replace_state(only(&app, &["bigmem", "web3"]));
+        assert_eq!(app.mode, Mode::Diff { id: 0, scroll: 4 });
+        app.replace_state(only(&app, &["web3"]));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.selected(), Some(0), "the first one, when it is gone");
+    }
+
+    #[test]
+    fn a_confirmation_for_a_host_that_changed_is_dropped() {
+        let (mut app, now) = mixed_app();
+        select(&mut app, "al2-aarch64");
+        app.on_key(ch('a'), now);
+        let Mode::Confirm(confirm) = app.mode.clone() else {
+            panic!("expected a confirmation, got {:?}", app.mode)
+        };
+        // Same host, another position: it stays, renumbered.
+        let mut state = only(&app, &["web1", "al2-aarch64"]);
+        assert!(!app.replace_state(state.clone()));
+        assert_eq!(
+            app.mode,
+            Mode::Confirm(Confirm {
+                id: 1,
+                ..confirm.clone()
+            })
+        );
+        // Redefined (another destination, say): what was confirmed isn't
+        // what would run any more.
+        state.hosts[1].host.note = Some("moved".into());
+        if let crate::config::Target::Ssh(ssh) = &mut state.hosts[1].host.target {
+            ssh.destination = "other.example.com".into();
+        }
+        assert!(app.replace_state(state));
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]

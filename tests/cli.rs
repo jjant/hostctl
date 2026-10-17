@@ -1913,6 +1913,55 @@ fn a_signal_at_the_press_enter_prompt_leaves_the_terminal_as_it_was() {
     }
 }
 
+#[test]
+fn a_refresh_finds_the_hosts_the_flake_has_now() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('b'));
+    w.env("TERM", Some("xterm-256color"));
+    let pty = Pty::new(100, 30);
+    let child = pty.spawn(w.command(&["tui"]));
+    pty.wait_for_screen(100, 30, "2 ✓");
+    // The flake moves on: web2 is gone (and no longer evaluates), web3 new.
+    w.flake(REV2);
+    discover_home(&w, &["web1", "web3"]);
+    w.eval_fails(&hm_attr("web2"), "error: attribute 'web2' missing\n")
+        .delay(3.0);
+    home_host(&w, "web3", &hm('c'), &hm('c'));
+    let changed = "the flake's hosts changed (new: web3; gone: web2)";
+    // `r` is refused while the first check finishes.
+    for _ in 0..40 {
+        pty.send(b"r");
+        std::thread::sleep(Duration::from_millis(250));
+        if pty.screen(100, 30).contains(changed) {
+            break;
+        }
+    }
+    pty.wait_for_screen(100, 30, changed);
+    pty.wait_for_screen(100, 30, "web3  home-manager  ✓ up to date");
+    let screen = pty.screen(100, 30);
+    assert!(
+        !screen.contains("web2  home-manager"),
+        "{}",
+        screen.rows().join("\n")
+    );
+    pty.send(b"q");
+    assert_eq!(wait(child), 0, "{}", pty.screen(100, 30).rows().join("\n"));
+    assert!(
+        !pty.output().contains("eval failed"),
+        "web2 was checked against a flake without it"
+    );
+    // The refresh resolved the flake once, for its check and the hosts.
+    let refreshed: Vec<Call> = w
+        .resolutions()
+        .into_iter()
+        .filter(|c| c.args.contains("--refresh"))
+        .collect();
+    assert_eq!(refreshed.len(), 2, "{}", w.log());
+}
+
 // ─── config, completions ────────────────────────────────────────────────
 
 #[test]
