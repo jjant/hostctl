@@ -521,13 +521,59 @@ fn freshness(refresh: bool, offline: bool) -> Freshness {
 }
 
 /// The last fallback for `flake` (DESIGN.md "Configuration"): the current
-/// directory, as an absolute path, when it has a `flake.nix`.
+/// directory, as an absolute path, when it has a `flake.nix`. Nix would
+/// misread a path with `#` (a fragment) or `?` (a query) in it: that one
+/// becomes the URL nix makes of a path, `git+file://<repository>` (with
+/// `?dir=<subdirectory>`) when a `.git` is found above it the way nix
+/// looks, else `path:<directory>`, percent-encoded.
 fn flake_here(dir: Option<&Path>) -> Option<String> {
     let dir = dir?;
     if !dir.is_absolute() || !dir.join("flake.nix").is_file() {
         return None;
     }
-    dir.to_str().map(str::to_owned)
+    let path = dir.to_str()?;
+    if !path.contains(['#', '?']) {
+        return Some(path.to_owned());
+    }
+    // As nix's parsePathFlakeRefWithFragment: up to, not including, `/`.
+    let repository = dir
+        .ancestors()
+        .take_while(|root| root.parent().is_some())
+        .find(|root| root.join(".git").exists());
+    Some(match repository {
+        Some(root) => {
+            let mut query = Vec::new();
+            if let Ok(sub) = dir.strip_prefix(root)
+                && !sub.as_os_str().is_empty()
+            {
+                query.push(format!("dir={}", percent_encode(&sub.to_string_lossy())));
+            }
+            if root.join(".git/shallow").exists() {
+                query.push("shallow=1".into());
+            }
+            let mut url = format!("git+file://{}", percent_encode(&root.to_string_lossy()));
+            if !query.is_empty() {
+                url.push('?');
+                url.push_str(&query.join("&"));
+            }
+            url
+        }
+        None => format!("path:{}", percent_encode(path)),
+    })
+}
+
+/// `s` with every byte but `[A-Za-z0-9-._~/]` percent-encoded (nix decodes
+/// the paths and query values of flake URLs).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// Whether to color stdout: `auto` means it is a terminal, `NO_COLOR` is
@@ -1908,6 +1954,43 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         std::fs::create_dir(other.path().join("flake.nix")).unwrap();
         assert_eq!(flake_here(Some(other.path())), None);
+    }
+
+    #[test]
+    fn a_flake_path_nix_would_misread_becomes_a_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().to_str().unwrap().to_string();
+        let flake = |path: &Path| {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("flake.nix"), "{ outputs = _: { }; }").unwrap();
+            flake_here(Some(path)).unwrap()
+        };
+        let encoded = percent_encode(&base);
+        assert_eq!(
+            flake(&tmp.path().join("c#-100% ok?")),
+            format!("path:{encoded}/c%23-100%25%20ok%3F")
+        );
+        // Spaces alone don't need it.
+        assert_eq!(
+            flake(&tmp.path().join("my flake")),
+            format!("{base}/my flake")
+        );
+        // In a git work tree, what nix makes of the path: the repository and
+        // the flake's directory in it.
+        let repo = tmp.path().join("nix#config");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        assert_eq!(flake(&repo), format!("git+file://{encoded}/nix%23config"));
+        assert_eq!(
+            flake(&repo.join("hosts/a b")),
+            format!("git+file://{encoded}/nix%23config?dir=hosts/a%20b")
+        );
+        std::fs::write(repo.join(".git/shallow"), "").unwrap();
+        assert_eq!(
+            flake(&repo.join("hosts")),
+            format!("git+file://{encoded}/nix%23config?dir=hosts&shallow=1")
+        );
+        assert_eq!(percent_encode("a-z_0.9~/x"), "a-z_0.9~/x");
+        assert_eq!(percent_encode("é&="), "%C3%A9%26%3D");
     }
 
     #[test]
