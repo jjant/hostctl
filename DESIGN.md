@@ -444,8 +444,10 @@ bytes as `--plain`; the footer lists `update: hostctl activate <outdated…>`.
 - Columns HOST · STATUS · GEN · ACTIVATED · DETAIL (+ KIND when wide). When
   narrow, DETAIL truncates first, then KIND, GEN, ACTIVATED go; HOST and STATUS
   never do. The local host is marked `•`.
-- `d`/Enter opens a full-screen scrollable diff view (`q`/Esc back); on
-  "desired generation missing" it offers the interactive build. `r` is ignored
+- `d`/Enter opens a full-screen scrollable diff view (`q`/Esc back); when the
+  new generation is in neither this machine's nor the host's store, it says a
+  binary cache may have it and that `b` fetches or builds it (on the host, or
+  here for local hosts and `activate-on = "local"`). `r` is ignored
   (with a flash) while a check runs. Actions on a busy host are refused.
 - `app.rs` is a pure state machine (`on_key → Command`), `view.rs` renders it
   (insta snapshots of `TestBackend` buffers at 40/60/80/120 columns), `mod.rs`

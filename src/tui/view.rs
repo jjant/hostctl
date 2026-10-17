@@ -60,7 +60,9 @@ const MAX_ERROR_LINES: usize = 400;
 ///   when the screen is too short —, where it runs, warning);
 /// - [`crate::tui::app::Mode::Diff`]: a full-screen scrollable diff (summary
 ///   line + one row per change, colored by kind), its spinner, or the
-///   "desired generation missing — b to build on `<host>`" message.
+///   "the new generation isn't in this machine's or `<host>`'s store yet
+///   (a binary cache may have it) — b fetches or builds it on `<host>`"
+///   message.
 ///
 /// Colors only when `app.color` (else bold/reverse/dim only). Works down to
 /// 40×10.
@@ -1442,35 +1444,45 @@ fn diff_message(ctx: &Ctx, h: &HostState, width: usize) -> Vec<Line<'static>> {
     }
     match h.diff.get() {
         Some(Ok(DiffOutcome::DesiredMissing)) => {
-            let target = if actions::runs_here(&h.host) {
-                "here".to_string()
+            // The stores the diff looked in: a forced-command route only
+            // lets it list this machine's.
+            let forced = h.host.ssh().is_some_and(|ssh| ssh.forced_command.is_some());
+            let stores = if h.host.is_local() || forced {
+                "this machine's store".to_string()
             } else {
-                format!("on {name}")
+                format!("this machine's or {name}'s store")
             };
-            wrap(
-                vec![
-                    Span::styled("desired generation missing", t.warn()),
-                    Span::styled(" — ", t.dim()),
-                    Span::styled("b", t.bold()),
-                    Span::raw(format!(" to build {target}")),
-                ],
-                width,
-                0,
-                &mut out,
-            );
-            out.push(Line::raw(""));
-            let desired = h
-                .desired()
-                .map_or_else(|| "it".to_string(), |d| d.path.short());
-            let place = if h.host.is_local() {
-                "isn't in the local store yet".to_string()
-            } else {
-                format!("is neither on {name} nor in the local store yet")
+            let mut spans = vec![
+                Span::styled(
+                    format!("the new generation isn't in {stores} yet"),
+                    t.warn(),
+                ),
+                Span::styled(" (a binary cache may have it)", t.dim()),
+            ];
+            let build = match ctx.app.state.flake_info(&h.host.flake) {
+                Some(flake) => actions::build_command(&h.host, flake).map(drop),
+                None => Err("its flake isn't resolved".to_string()),
             };
-            let text = format!(
-                "{desired} {place}. Building it activates nothing; the diff runs again afterwards."
-            );
-            wrap(vec![Span::styled(text, t.dim())], width, 0, &mut out);
+            match &build {
+                Ok(()) => {
+                    let place = if actions::runs_here(&h.host) {
+                        "here".to_string()
+                    } else {
+                        format!("on {name}")
+                    };
+                    spans.push(Span::styled(" — ", t.dim()));
+                    spans.push(Span::styled("b", t.bold()));
+                    spans.push(Span::raw(format!(" fetches or builds it {place}")));
+                }
+                Err(why) => spans.push(Span::raw(format!(", and {}", flat(why)))),
+            }
+            wrap(spans, width, 0, &mut out);
+            if build.is_ok() {
+                out.push(Line::raw(""));
+                let then =
+                    "Fetching or building it activates nothing; the diff runs again afterwards.";
+                wrap(vec![Span::styled(then, t.dim())], width, 0, &mut out);
+            }
         }
         Some(Err(e)) => {
             wrap(
@@ -2420,7 +2432,7 @@ mod tests {
     use ratatui::buffer::Buffer;
 
     use super::*;
-    use crate::config::Kind;
+    use crate::config::{ActivateOn, Kind};
     use crate::model::{AppState, Desired, ErrorInfo, Event};
     use crate::nix::FlakeInfo;
     use crate::tui::app::testing::*;
@@ -3474,6 +3486,56 @@ mod tests {
                 id: 3,
                 scroll: 50 - 2 * rows
             }
+        );
+    }
+
+    #[test]
+    fn a_missing_generation_says_where_it_was_looked_for_and_what_b_does() {
+        let message = |id: HostId, setup: fn(&mut Script)| -> Vec<String> {
+            let mut s = mixed();
+            setup(&mut s);
+            s.diffed(id, 800, Ok(DiffOutcome::DesiredMissing));
+            let now = s.at(12_000);
+            let app = App::new(s.state, false);
+            diff_message(&ctx(&app, now), &app.state.hosts[id], 200)
+                .iter()
+                .map(line_text)
+                .collect()
+        };
+        let then = "Fetching or building it activates nothing; the diff runs again afterwards.";
+        assert_eq!(
+            message(0, |_| {}),
+            [
+                "the new generation isn't in this machine's or al2-aarch64's store yet (a binary cache may \
+                 have it) — b fetches or builds it on al2-aarch64",
+                "",
+                then,
+            ]
+        );
+        // This machine: only its store.
+        assert_eq!(
+            message(3, |_| {}),
+            [
+                "the new generation isn't in this machine's store yet (a binary cache may have it) — b \
+                 fetches or builds it here",
+                "",
+                then,
+            ]
+        );
+        // Pushed from here: built here.
+        assert_eq!(
+            message(0, |s| s.state.hosts[0].host.activate_on = ActivateOn::Local)[0],
+            "the new generation isn't in this machine's or al2-aarch64's store yet (a binary cache may \
+             have it) — b fetches or builds it here"
+        );
+        // A forced-command route: only this machine's store, and no b.
+        assert_eq!(
+            message(6, |s| s.state.hosts[6].probe =
+                s.state.hosts[3].probe.clone()),
+            [
+                "the new generation isn't in this machine's store yet (a binary cache may have it), \
+                 and mac-m1 only answers its probe command"
+            ]
         );
     }
 
