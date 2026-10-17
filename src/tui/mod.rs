@@ -648,6 +648,9 @@ fn run_flash(name: &str, after: After, ran: &Ran) -> String {
 /// SIGHUP came instead.
 async fn press_enter(signals: &mut Signals) -> io::Result<bool> {
     enable_raw_mode()?;
+    // However this ends: a SIGTERM here quits hostctl, and the dashboard
+    // turns raw mode on again itself when it comes back.
+    let _raw = RawMode;
     discard_typeahead();
     // Events crossterm read before the suspension.
     while crossterm::event::poll(Duration::ZERO)? {
@@ -667,6 +670,15 @@ async fn press_enter(signals: &mut Signals) -> io::Result<bool> {
                 None => return Ok(false),
             },
         }
+    }
+}
+
+/// Raw mode, which was turned on, turned off again on drop.
+struct RawMode;
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
     }
 }
 

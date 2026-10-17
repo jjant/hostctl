@@ -1869,6 +1869,33 @@ fn activating_this_machine_runs_here() {
     );
 }
 
+// ─── the dashboard, on a terminal ───────────────────────────────────────
+
+#[test]
+fn a_signal_at_the_press_enter_prompt_leaves_the_terminal_as_it_was() {
+    let (w, _host) = activation_world();
+    w.env("TERM", Some("xterm-256color"));
+    let pty = Pty::new(100, 30);
+    let before = pty.termios();
+    let child = pty.spawn(w.command(&["tui"]));
+    pty.wait_for("outdated");
+    pty.send(b"a");
+    pty.wait_for("Activate web1?");
+    pty.send(b"y");
+    pty.wait_for("Press Enter to return.");
+    // SAFETY: a plain syscall.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(wait(child), 130, "{:?}", pty.output());
+    let after = pty.termios();
+    for flag in [libc::ICANON, libc::ECHO, libc::ISIG] {
+        assert_eq!(
+            after.c_lflag & flag,
+            before.c_lflag & flag,
+            "raw mode left behind ({flag:#x})"
+        );
+    }
+}
+
 // ─── config, completions ────────────────────────────────────────────────
 
 #[test]

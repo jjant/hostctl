@@ -220,6 +220,146 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd
 }
 
+/// A pseudo-terminal to run hostctl on the way a user does ([`Pty::spawn`]):
+/// everything it writes is collected from the master side, keys are typed
+/// into it, and the terminal's settings can be read when it is done.
+pub struct Pty {
+    master: fs::File,
+    slave: fs::File,
+    output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl Pty {
+    /// A terminal of `cols` × `rows`.
+    pub fn new(cols: u16, rows: u16) -> Pty {
+        use std::os::fd::FromRawFd as _;
+        // ptsname(3) returns a static buffer.
+        static PTSNAME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // SAFETY: plain calls; the descriptors are checked and then owned.
+        let (master, slave) = unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(
+                master >= 0,
+                "posix_openpt: {}",
+                std::io::Error::last_os_error()
+            );
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let name = {
+                let _lock = PTSNAME.lock().unwrap();
+                let name = libc::ptsname(master);
+                assert!(!name.is_null());
+                std::ffi::CStr::from_ptr(name).to_owned()
+            };
+            let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+            assert!(
+                slave >= 0,
+                "opening the pty: {}",
+                std::io::Error::last_os_error()
+            );
+            let size = libc::winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            assert_eq!(libc::ioctl(master, libc::TIOCSWINSZ, &size), 0);
+            (fs::File::from_raw_fd(master), fs::File::from_raw_fd(slave))
+        };
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut reader = master.try_clone().unwrap();
+        let collected = std::sync::Arc::clone(&output);
+        // Until the slave side is gone (EIO) or the test is over.
+        std::thread::spawn(move || {
+            let mut buf = [0; 4096];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                collected.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        Pty {
+            master,
+            slave,
+            output,
+        }
+    }
+
+    /// Start `cmd` (a [`World::command`], which makes it a session leader)
+    /// with this terminal as its controlling terminal, stdin, stdout and
+    /// stderr.
+    pub fn spawn(&self, mut cmd: Command) -> Child {
+        let stdio = || Stdio::from(self.slave.try_clone().unwrap());
+        cmd.stdin(stdio()).stdout(stdio()).stderr(stdio());
+        // SAFETY: ioctl(2) is async-signal-safe; it runs after setsid.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.spawn().expect("hostctl runs")
+    }
+
+    /// Type `keys`.
+    pub fn send(&self, keys: &[u8]) {
+        use std::io::Write as _;
+        (&self.master).write_all(keys).unwrap();
+    }
+
+    /// Everything written so far, escape sequences and all.
+    pub fn output(&self) -> String {
+        String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned()
+    }
+
+    /// Wait (20 s at most) until `text` has been written.
+    #[track_caller]
+    pub fn wait_for(&self, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !self.output().contains(text) {
+            assert!(
+                Instant::now() < deadline,
+                "{text:?} never showed up in:\n{:?}",
+                self.output()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The terminal's settings now.
+    pub fn termios(&self) -> libc::termios {
+        use std::os::fd::AsRawFd as _;
+        // SAFETY: all-zero is a valid termios, which tcgetattr fills in.
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid descriptor and a pointer to a live termios.
+        assert_eq!(
+            unsafe { libc::tcgetattr(self.slave.as_raw_fd(), &mut termios) },
+            0
+        );
+        termios
+    }
+}
+
+/// Wait (at most [`RUN_TIMEOUT`]) for a child started on a [`Pty`]; its
+/// exit code, `-<signal>` when killed by one.
+pub fn wait(mut child: Child) -> i32 {
+    let deadline = Instant::now() + RUN_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status
+                .code()
+                .unwrap_or_else(|| -status.signal().unwrap_or(0));
+        }
+        if Instant::now() > deadline {
+            // SAFETY: a plain syscall; the child leads its own group.
+            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            let _ = child.wait();
+            panic!("hostctl ran for more than {RUN_TIMEOUT:?}");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// One call of a fake, from its `start`/`end` lines in the log.
 #[derive(Debug, Clone)]
 pub struct Call {
