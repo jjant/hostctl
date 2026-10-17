@@ -32,12 +32,13 @@ const TICK: Duration = Duration::from_millis(80);
 const SPINNER_DELAY: Duration = Duration::from_millis(250);
 
 /// Run a check of `hosts`, redrawing [`crate::output::status_table`] in
-/// place on stdout (move up, clear to end, rewrite) on each burst of events
-/// and on an 80 ms spinner tick, while the table fits the terminal; when it
-/// doesn't, draw a one-line progress on stderr instead (`⠋ 3/5 · 2
-/// evaluating · 2.1s`) and print the table once at the end. Ctrl-C applies
-/// [`crate::model::Event::Interrupted`], flushes the cache and returns the
-/// partial state. The cursor is hidden while drawing and always restored.
+/// place on stdout (move up, rewrite each row, clear what is left) on each
+/// burst of events and on an 80 ms spinner tick, while the table fits the
+/// terminal; when it doesn't, draw a one-line progress on stderr instead
+/// (`⠋ 3/5 · 2 evaluating · 2.1s`) and print the table once at the end.
+/// Ctrl-C applies [`crate::model::Event::Interrupted`], flushes the cache
+/// and returns the partial state. The cursor is hidden while drawing and
+/// always restored.
 pub async fn status(
     engine: &Engine,
     state: AppState,
@@ -468,26 +469,56 @@ impl Screen {
 
 /// The bytes that replace a table drawn on the `prev_rows` rows right
 /// above the cursor (0: nothing drawn yet) with `table`, on a terminal of
-/// `size` (columns, rows): back to the first column, up `prev_rows`, clear
-/// to the end of the screen, `table`. `None` when `table` doesn't fit,
-/// i.e. needs as many rows as the terminal has: the cursor (on the row
-/// below it) could no longer get back to its top.
+/// `size` (columns, rows): back to the first column, up `prev_rows`, each
+/// line of `table` over its cleared row (`CSI K`; frames are cut to the
+/// width, so a line is a row), then the rows of the previous table left
+/// over cleared one by one. `None` when `table` doesn't fit, i.e. needs as
+/// many rows as the terminal has: the cursor (on the row below it) could
+/// no longer get back to its top.
+///
+/// Never "erase below" (`CSI J`): in tmux (`scroll-on-clear`, on by
+/// default) that moves the whole screen into the scrollback when the
+/// cursor is at the top-left corner, where the table starts when hostctl
+/// runs in a pane of its own or when it fills the screen.
 fn redraw(prev_rows: usize, table: &str, (cols, rows): (usize, usize)) -> Option<String> {
-    if rows_of(table, cols) >= rows {
+    let new_rows = rows_of(table, cols);
+    if new_rows >= rows {
         return None;
     }
-    let mut out = erase(prev_rows);
-    out.push_str(table);
+    let mut out = String::from("\r");
+    up(&mut out, prev_rows);
+    for line in table.lines() {
+        out.push_str("\x1b[K");
+        out.push_str(line);
+        out.push('\n');
+    }
+    clear_rows(&mut out, prev_rows.saturating_sub(new_rows));
     Some(out)
 }
 
-/// Move to the start of the `rows` rows above the cursor and clear from
-/// there to the end of the screen.
+/// Clear the `rows` rows above the cursor, leaving it at the start of the
+/// first of them (without `CSI J`: see [`redraw`]).
 fn erase(rows: usize) -> String {
-    // `CSI 0 A` moves up one row on most terminals: never emit it.
-    match rows {
-        0 => "\r\x1b[J".into(),
-        n => format!("\r\x1b[{n}A\x1b[J"),
+    let mut out = String::from("\r");
+    up(&mut out, rows);
+    clear_rows(&mut out, rows);
+    out
+}
+
+/// Clear `rows` rows from the cursor's on down, one by one (`CSI K`, then
+/// `CSI B`, which never scrolls), and come back up.
+fn clear_rows(out: &mut String, rows: usize) {
+    for _ in 0..rows {
+        out.push_str("\x1b[K\x1b[B");
+    }
+    up(out, rows);
+}
+
+/// Move up `rows` rows (`CSI 0 A` moves up one on most terminals: never
+/// emitted).
+fn up(out: &mut String, rows: usize) {
+    if rows > 0 {
+        let _ = write!(out, "\x1b[{rows}A");
     }
 }
 
@@ -815,8 +846,10 @@ mod tests {
 
     /// Just enough of a VT100 to check what a user would see: printing with
     /// deferred autowrap, `\r`, `\n` (as the tty's ONLCR makes it), scrolling
-    /// into a scrollback, `CSI n A`, `CSI J`, `CSI K`, and ignored SGR /
-    /// cursor visibility.
+    /// into a scrollback, `CSI n A`, `CSI n B`, `CSI J`, `CSI K`, and ignored
+    /// SGR / cursor visibility. Optionally tmux's `scroll-on-clear` (on by
+    /// default there): `CSI J` at the top-left corner moves the screen, up
+    /// to its last used row, into the scrollback.
     struct Vt {
         cols: usize,
         grid: Vec<Vec<char>>,
@@ -824,6 +857,7 @@ mod tests {
         row: usize,
         col: usize,
         wrap_next: bool,
+        scroll_on_clear: bool,
     }
 
     impl Vt {
@@ -835,6 +869,15 @@ mod tests {
                 row: 0,
                 col: 0,
                 wrap_next: false,
+                scroll_on_clear: false,
+            }
+        }
+
+        /// A tmux pane.
+        fn tmux(cols: usize, rows: usize) -> Vt {
+            Vt {
+                scroll_on_clear: true,
+                ..Vt::new(cols, rows)
             }
         }
 
@@ -876,7 +919,22 @@ mod tests {
                                 self.row = self.row.saturating_sub(n);
                                 self.wrap_next = false;
                             }
+                            'B' => {
+                                self.row = (self.row + n).min(self.grid.len() - 1);
+                                self.wrap_next = false;
+                            }
                             'J' => {
+                                if self.scroll_on_clear && (self.row, self.col) == (0, 0) {
+                                    let used = self
+                                        .grid
+                                        .iter()
+                                        .rposition(|row| row.iter().any(|&c| c != ' '));
+                                    for row in &self.grid[..used.map_or(0, |last| last + 1)] {
+                                        self.scrollback.push(
+                                            row.iter().collect::<String>().trim_end().to_string(),
+                                        );
+                                    }
+                                }
                                 for col in self.col..self.cols {
                                     self.grid[self.row][col] = ' ';
                                 }
@@ -986,15 +1044,28 @@ mod tests {
 
     #[test]
     fn redraw_moves_up_over_the_previous_table() {
-        assert_eq!(redraw(0, "a\nb\n", (80, 24)).unwrap(), "\r\x1b[Ja\nb\n");
+        assert_eq!(
+            redraw(0, "a\nb\n", (80, 24)).unwrap(),
+            "\r\x1b[Ka\n\x1b[Kb\n"
+        );
         assert_eq!(
             redraw(2, "a\nb\nc\n", (80, 24)).unwrap(),
-            "\r\x1b[2A\x1b[Ja\nb\nc\n"
+            "\r\x1b[2A\x1b[Ka\n\x1b[Kb\n\x1b[Kc\n"
         );
-        // Shrinking is just as easy: clearing to the end removes the rest.
-        assert_eq!(redraw(3, "a\n", (80, 24)).unwrap(), "\r\x1b[3A\x1b[Ja\n");
-        assert_eq!(erase(0), "\r\x1b[J");
-        assert_eq!(erase(5), "\r\x1b[5A\x1b[J");
+        // Shrinking: the rows left over are cleared one by one.
+        assert_eq!(
+            redraw(3, "a\n", (80, 24)).unwrap(),
+            "\r\x1b[3A\x1b[Ka\n\x1b[K\x1b[B\x1b[K\x1b[B\x1b[2A"
+        );
+        assert_eq!(erase(0), "\r");
+        assert_eq!(erase(2), "\r\x1b[2A\x1b[K\x1b[B\x1b[K\x1b[B\x1b[2A");
+        // Never "erase below": tmux's scroll-on-clear.
+        for out in [redraw(3, "a\n", (80, 24)).unwrap(), erase(5)] {
+            assert!(
+                !out.contains("\x1b[J") && !out.contains("\x1b[0"),
+                "{out:?}"
+            );
+        }
     }
 
     #[test]
@@ -1163,7 +1234,7 @@ mod tests {
         assert_eq!(vt.screen(), expected);
         assert!(vt.scrollback.is_empty(), "{:?}", vt.scrollback);
         // It was redrawn along the way, not printed once.
-        assert!(term.out.matches("\x1b[J").count() > 3, "{:?}", term.out);
+        assert!(term.out.matches("A\x1b[K").count() > 3, "{:?}", term.out);
         assert!(table.contains("2 up to date"), "{table}");
     }
 
@@ -1197,6 +1268,51 @@ mod tests {
         assert_eq!(vt.screen(), wrapped(&plain, 40));
         // While it ran, frames were cut to fit.
         assert!(term.out.contains("…"), "{:?}", term.out);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn redraws_at_the_top_left_leave_tmux_scrollback_alone() {
+        // A pane running hostctl directly: the table starts at the top-left.
+        let names = ["bigmem", "web1", "web2"];
+        let mut s = state(&names);
+        let mut term = Fake::new(80, 24);
+        run(
+            &mut term,
+            Display::Table(PLAIN),
+            &mut s,
+            complete_check(&names),
+            None,
+        )
+        .await;
+        let mut vt = Vt::tmux(80, 24);
+        vt.feed(&term.out);
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
+        assert_eq!(vt.screen(), lines(&table));
+        assert_eq!(
+            vt.scrollback,
+            Vec::<String>::new(),
+            "frames went to the scrollback"
+        );
+
+        // A table that fills the screen ends up starting at its top too.
+        let names = ["bigmem", "web1", "web2", "web3", "web4"];
+        let mut s = state(&names);
+        let mut term = Fake::new(80, 11);
+        run(
+            &mut term,
+            Display::Table(PLAIN),
+            &mut s,
+            complete_check(&names),
+            None,
+        )
+        .await;
+        let mut vt = Vt::tmux(80, 11);
+        vt.feed("$ hostctl status\n");
+        vt.feed(&term.out);
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
+        assert_eq!(table.lines().count(), 10, "{table}");
+        assert_eq!(vt.screen(), lines(&table));
+        assert_eq!(vt.scrollback, ["$ hostctl status"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1288,9 +1404,9 @@ mod tests {
         screen.update(&mut term, &s).unwrap();
         let wide = term
             .out
-            .strip_prefix("\r\x1b[J")
+            .strip_prefix("\r")
             .expect("first draw")
-            .to_string();
+            .replace("\x1b[K", "");
         assert!(wide.lines().any(|l| visible_width(l) > 30), "{wide}");
 
         // Nothing changed: nothing is written.
@@ -1304,10 +1420,16 @@ mod tests {
         let up = rows_of(&wide, 30);
         assert!(up > wide.lines().count());
         let narrow = output::status_table(&s, PLAIN, Some(30), util::now_unix());
-        assert_eq!(term.out, format!("\r\x1b[{up}A\x1b[J{narrow}"));
+        assert_eq!(term.out, redraw(up, &narrow, (30, 30)).unwrap());
+        assert!(term.out.starts_with(&format!("\r\x1b[{up}A\x1b[K")));
         for line in narrow.lines() {
             assert!(visible_width(line) <= 30, "{line:?}");
         }
+        // What the old lines left below the new ones is cleared.
+        let mut reflowed = Vt::new(30, 30);
+        reflowed.feed(&wide);
+        reflowed.feed(&term.out);
+        assert_eq!(reflowed.screen(), lines(&narrow));
     }
 
     #[tokio::test(start_paused = true)]
