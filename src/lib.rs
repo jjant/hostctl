@@ -8,6 +8,7 @@ pub mod config;
 pub mod exec;
 pub mod local;
 pub mod nix;
+pub mod probe;
 pub mod remote;
 pub mod storepath;
 pub mod util;
