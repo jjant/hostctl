@@ -1,0 +1,95 @@
+#!/bin/sh
+# Fake `nix` for hostctl's integration tests (see tests/common/mod.rs). It
+# answers from scenario files in $HOSTCTL_FAKE:
+#
+#   nix-version                 `nix --version` (default: nix (Nix) 2.35.3)
+#   flakes/<flake>/metadata.json   `nix flake metadata --json … <flake>`
+#   hosts.json                  `nix eval --json … '<locked>#.' --apply …` (discovery)
+#   evals/<attr>                `nix eval --raw … '<locked>#.<attr>.outPath'`
+#   evals/<attr>.readonly-fails   `--read-only` evaluations of <attr> fail the
+#                               way import-from-derivation does
+#   builds/<attr>               `nix build … '<locked>#.<attr>'`: the closure
+#                               ("<path><TAB><size>" lines, the out path
+#                               first) it realises on the host it runs on
+#                               ($HOSTCTL_PROBE_ROOT/../closures)
+#
+# <flake> and <attr> with every character outside [A-Za-z0-9._-] replaced by
+# `_`. Next to an answer file X, all optional: X.delay (seconds to wait
+# first), X.await (wait until that many evaluations have started, or for
+# metadata.json that many ssh calls: a rendezvous only concurrent callers
+# pass quickly; 10 s at most), X.stderr, X.exit.
+#
+# Every call appends "start <pid> nix <args…>" to $HOSTCTL_FAKE/log, and
+# "end <pid> <exit code>" unless it is killed. Appends are atomic, so the
+# order of the lines tells which calls overlapped.
+set -u
+F=${HOSTCTL_FAKE:?HOSTCTL_FAKE not set}
+printf 'start %s nix %s\n' "$$" "$*" >>"$F/log"
+finish() {
+  printf 'end %s %s\n' "$$" "$1" >>"$F/log"
+  exit "$1"
+}
+key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+# Replay the answer in file $1; with $2, X.await waits for that many log
+# lines matching it (10 s at most).
+replay() {
+  if [ -f "$1.await" ] && [ -n "${2:-}" ]; then
+    i=0
+    while [ "$(grep -c -- "$2" "$F/log")" -lt "$(cat "$1.await")" ] && [ "$i" -lt 200 ]; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+  fi
+  [ -f "$1.delay" ] && sleep "$(cat "$1.delay")"
+  [ -f "$1.stderr" ] && cat "$1.stderr" >&2
+  [ -f "$1" ] && cat "$1"
+  [ -f "$1.exit" ] && finish "$(cat "$1.exit")"
+  [ -f "$1" ] || { echo "fake-nix: no scenario file ${1#"$F"/}" >&2; finish 1; }
+  finish 0
+}
+
+if [ "${1:-}" = --version ]; then
+  if [ -f "$F/nix-version" ]; then cat "$F/nix-version"; else echo "nix (Nix) 2.35.3"; fi
+  finish 0
+fi
+# hostctl always passes --extra-experimental-features 'nix-command flakes' first.
+if [ "${1:-}" = --extra-experimental-features ]; then shift 2; fi
+last=
+for arg in "$@"; do last=$arg; done
+case "${1:-} ${2:-}" in
+"flake metadata")
+  # Here X.await counts ssh calls: probes start along with resolutions.
+  replay "$F/flakes/$(key "$last")/metadata.json" '^start [0-9]* ssh '
+  ;;
+"eval --raw")
+  attr=${last#*#.}
+  attr=${attr%.outPath}
+  base=$F/evals/$(key "$attr")
+  case " $* " in
+  *" --read-only "*)
+    if [ -f "$base.readonly-fails" ]; then
+      echo "error: path '/nix/store/wdfh0jh598v4qshmcs296ri45p0win4b-gen.drv' is not valid" >&2
+      finish 1
+    fi
+    ;;
+  esac
+  replay "$base" '^start [0-9]* nix .* eval --raw '
+  ;;
+"eval --json")
+  replay "$F/hosts.json"
+  ;;
+"build --no-link")
+  base=$F/builds/$(key "${last#*#.}")
+  [ -f "$base" ] || { echo "error: fake-nix can't build ${last#*#.}" >&2; finish 1; }
+  [ -f "$base.delay" ] && sleep "$(cat "$base.delay")"
+  out=$(head -n 1 "$base" | cut -f 1)
+  store=${HOSTCTL_PROBE_ROOT:?a build runs on no fake host}/../closures
+  mkdir -p "$store" && cp "$base" "$store/${out##*/}" || finish 1
+  echo "$out"
+  finish 0
+  ;;
+*)
+  echo "fake-nix: unsupported: $*" >&2
+  finish 1
+  ;;
+esac

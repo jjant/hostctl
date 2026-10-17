@@ -1,0 +1,32 @@
+#!/bin/sh
+# Fake `nix-store` for hostctl's diff tests (see tests/common/mod.rs): the
+# store it answers for is described by the files in ../closures (next to
+# the bin/ directory it is called from): closures/<name> is the closure of
+# the store path whose base name is <name>, as "<path><TAB><NAR size>" lines.
+# A path is valid when it is in one of them. Supports what hostctl's closure
+# script runs: -qR PATH, -q --size PATH…, --check-validity --print-invalid PATH….
+set -u
+S=${0%/*}/../closures
+valid() { cat "$S"/* 2>/dev/null | cut -f 1 | grep -qxF -- "$1"; }
+case "${1:-} ${2:-}" in
+"-qR "*)
+  [ -f "$S/${2##*/}" ] || { echo "error: path '$2' is not valid" >&2; exit 1; }
+  cut -f 1 "$S/${2##*/}"
+  ;;
+"-q --size")
+  shift 2
+  for p in "$@"; do
+    size=$(cat "$S"/* 2>/dev/null | awk -F '\t' -v p="$p" '$1 == p { print $2; exit }')
+    [ -n "$size" ] || { echo "error: path '$p' is not valid" >&2; exit 1; }
+    echo "$size"
+  done
+  ;;
+"--check-validity --print-invalid")
+  shift 2
+  for p in "$@"; do valid "$p" || echo "$p"; done
+  ;;
+*)
+  echo "fake nix-store: unsupported: $*" >&2
+  exit 1
+  ;;
+esac

@@ -1,0 +1,81 @@
+#!/bin/sh
+# Fake `ssh` for hostctl's integration tests (see tests/common/mod.rs).
+# Instead of connecting it runs the command locally, as host <host> (the
+# destination's host part) would, so hostctl's real probe script runs against
+# the host's files in $HOSTCTL_FAKE/hosts/<host>:
+#
+#   root/        the host's file system as the probe sees it (exported as
+#                HOSTCTL_PROBE_ROOT; HOME is root/home, TMPDIR root/tmp)
+#   bin/         commands first on the host's PATH (e.g. the fake nix-store)
+#   unreachable  ssh fails: this text on stderr, exit 255
+#   silent-255   while multiplexed (-o ControlMaster=auto), exit 255 without
+#                a word, the way ControlPersist swallows a ProxyCommand's
+#                error; unmultiplexed runs go on as usual
+#   delay        seconds to wait before running the command
+#   await        wait until this many ssh calls have started (10 s at most):
+#                a rendezvous only parallel callers pass quickly
+#   forced       the answer to any command other than `sh …`, like a
+#                forced-command route; without it such a command fails the
+#                way mac-open-recv does ("unknown mode", exit 1)
+#
+# An interactive run (`sh <file>`) first copies <file> to interactive.sh.
+# Every call appends "start <pid> ssh <argv…>" to $HOSTCTL_FAKE/log, and
+# "end <pid> <exit code>" unless it is killed.
+set -u
+F=${HOSTCTL_FAKE:?HOSTCTL_FAKE not set}
+printf 'start %s ssh %s\n' "$$" "$*" >>"$F/log"
+finish() {
+  printf 'end %s %s\n' "$$" "$1" >>"$F/log"
+  exit "$1"
+}
+mux=
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+  [ "$1" = ControlMaster=auto ] && mux=1
+  shift
+done
+[ $# -gt 2 ] || { echo "fake-ssh: no -- <destination> <command> in argv" >&2; finish 255; }
+login=$2
+shift 2
+host=${login#*@}
+H=$F/hosts/$host
+
+if [ ! -d "$H" ]; then
+  echo "ssh: Could not resolve hostname $host: Name or service not known" >&2
+  finish 255
+fi
+[ -n "$mux" ] && [ -f "$H/silent-255" ] && finish 255
+if [ -f "$H/unreachable" ]; then
+  cat "$H/unreachable" >&2
+  finish 255
+fi
+if [ -f "$H/await" ]; then
+  i=0
+  while [ "$(grep -c '^start [0-9]* ssh ' "$F/log")" -lt "$(cat "$H/await")" ] && [ "$i" -lt 200 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+fi
+[ -f "$H/delay" ] && sleep "$(cat "$H/delay")"
+
+case $login in
+*@*) USER=${login%@*} ;;
+*) USER=tester ;;
+esac
+HOSTCTL_PROBE_ROOT=$H/root HOME=$H/root/home TMPDIR=$H/root/tmp PATH=$H/bin:$PATH
+export USER HOSTCTL_PROBE_ROOT HOME TMPDIR PATH
+unset XDG_STATE_HOME
+mkdir -p "$TMPDIR"
+case ${1:-} in
+sh)
+  if [ $# -eq 2 ] && [ "$2" != -s ] && [ -f "$2" ]; then
+    cp "$2" "$H/interactive.sh"
+  fi
+  "$@"
+  finish $?
+  ;;
+*)
+  [ -f "$H/forced" ] || { echo "mac-open-recv: unknown mode" >&2; finish 1; }
+  cat "$H/forced"
+  finish 0
+  ;;
+esac
