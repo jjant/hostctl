@@ -3245,10 +3245,7 @@ error:
             )
         );
         assert!(
-            error
-                .error
-                .detail
-                .starts_with("$ ssh -T -o 'BatchMode=yes'"),
+            error.error.detail.starts_with("$ ssh -T -o BatchMode=yes"),
             "{}",
             error.error.detail
         );

@@ -75,10 +75,24 @@ impl CommandSpec {
     }
 
     /// The command line, shell-quoted, for messages (`ssh -T … sh -s`).
+    /// Arguments may keep a `=` unquoted (`-o BatchMode=yes`): only in
+    /// command position, or leading in zsh, is it special.
     pub fn display(&self) -> String {
-        std::iter::once(&self.program)
-            .chain(&self.args)
-            .map(|a| sh_quote(a))
+        let arg = |a: &String| -> String {
+            match a.split_once('=') {
+                Some((key, value))
+                    if !key.is_empty()
+                        && matches!(sh_quote(key), Cow::Borrowed(_))
+                        && (value.is_empty() || matches!(sh_quote(value), Cow::Borrowed(_)))
+                        && !value.contains('=') =>
+                {
+                    a.clone()
+                }
+                _ => sh_quote(a).into_owned(),
+            }
+        };
+        std::iter::once(sh_quote(&self.program).into_owned())
+            .chain(self.args.iter().map(arg))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -1690,5 +1704,22 @@ Host key verification failed.
         ] {
             assert!(!is_transient_ssh_failure(stderr), "{stderr:?}");
         }
+    }
+
+    #[test]
+    fn display_keeps_option_assignments_readable() {
+        let spec = CommandSpec::new("ssh").args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ControlPath=/tmp/a b",
+            "a=b=c",
+            "=x",
+            "it's",
+        ]);
+        assert_eq!(
+            spec.display(),
+            "ssh -o BatchMode=yes -o 'ControlPath=/tmp/a b' 'a=b=c' '=x' 'it'\\''s'"
+        );
     }
 }
