@@ -1232,7 +1232,9 @@ mod tests {
         let nix = run(command("nix").args(["store", "diff-closures", before, after]));
 
         let ours: Vec<String> = d.changes.iter().map(nix_line).collect();
-        assert_eq!(ours, strip_ansi(&nix).lines().collect::<Vec<_>>());
+        // Older Nix (2.31) signs growth: "+8.0 KiB".
+        let nix = strip_ansi(&nix).replace(": +", ": ").replace(", +", ", ");
+        assert_eq!(ours, nix.lines().collect::<Vec<_>>());
         use ChangeKind::*;
         assert_eq!(
             d.changes
