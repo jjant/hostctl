@@ -1,0 +1,14 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" 4╭ Activate al2-aarch64? ───────────╮⠼ "
+"╭─│ out=$(nix                        │─╮"
+"│ │ --extra-experimental-features    │ │"
+"│ │ 'nix-command flakes' build       │ │"
+"│ │ --no-link --print-out-paths 'git │ │"
+"│ │ hub:jjant/nix-config/42ea90213…  │ │"
+"│ │ runs on al2-aarch64 (devhost-dev │ │"
+"│ │ user1-2c-2b7c5f39.dc-west2.examp │ │"
+"╰─│ le.com)                          │ ╯"
+"  ╰──────────────── y run · n cancel ╯  "

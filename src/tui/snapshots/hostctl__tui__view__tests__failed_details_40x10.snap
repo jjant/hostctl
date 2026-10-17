@@ -1,0 +1,14 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" 42ea902           2✓ 4✗ 1○ 2! 1? 1– 1⠼ "
+" ! ssh.command "ssh" can't be run: No s…"
+"╭─────────────────────────── by status ╮"
+"│   HOST           STATUS              │"
+"│ ▶ desk           ! eval failed       │"
+"│   builder        ! probe failed      │"
+"│   pi             ? unreachable       │"
+"│   al2-aarch64    ✗ outdated          │"
+"╰─────────────────────────── 1–4 of 12 ╯"
+" enter diff  a activate  ? help  q quit "

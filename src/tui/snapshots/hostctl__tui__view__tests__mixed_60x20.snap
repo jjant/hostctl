@@ -1,0 +1,24 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" github:jjant/nix-config @ 42ea902     2✓ 4✗ 1○ 2! 1? 1– 1⠼ "
+"╭──────────────────────────────────────────────────────────╮"
+"│   HOST           STATUS            DETAIL                │"
+"│ ▶ al2-aarch64    ✗ outdated        on 1a2b3c4 (4mo old)… │"
+"│   al2-x86_64     ○ not activated   no home-manager prof… │"
+"│   al2023-x86_64  ⠼ evaluating 11s                        │"
+"│   bigmem •       ✗ outdated        unknown generation    │"
+"│   builder        ! probe failed    probe output ended e… │"
+"│   desk           ! eval failed     path 'wdfh0jh5-gen.d… │"
+"│   mac-m1         – offline         reachable only from … │"
+"│   pi             ? unreachable     ssh: Could not resol… │"
+"╰─────────────────────────────────────────────── 1–8 of 12 ╯"
+"╭ al2-aarch64 · home-manager · x86_64-linux · devhost-de…──╮"
+"│ current  aaaaaaaa-home-manager-generation · gen 93 ·     │"
+"│          activated 4mo ago                               │"
+"│ desired  bbbbbbbb-home-manager-generation · 42ea902      │"
+"│ drift    on 1a2b3c4 (4mo old), per hostctl's cache       │"
+"│ compare  https://github.com/jjant/nix-config/compare/1a2 │"
+"╰───────────────────────────────────────── 1–5 of 18 · J/K ╯"
+" enter diff  a activate  r refresh  / filter  ? help  q quit"

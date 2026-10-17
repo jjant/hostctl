@@ -1,0 +1,24 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" hostctl  github:jjant/nix-config ⠹ resolving           5 ⠹ "
+"╭──────────────────────────────────────────────────────────╮"
+"│   HOST         STATUS            GEN  ACTIVATED          │"
+"│ ▶ al2-aarch64  ⠹ probing 2s                              │"
+"│   al2-x86_64   ⠹ probing 2s                              │"
+"│   bigmem •     ⠹ waiting           9  12m ago            │"
+"│   mac-m1       ⠹ probing 2s                              │"
+"│   web1         ⠹ probing 2s                              │"
+"╰──────────────────────────────────────────────────────────╯"
+"╭ al2-aarch64 · home-manager · ssh ────────────────────────╮"
+"│ current  ⠹ probing 2s                                    │"
+"│ desired  waiting for the flake                           │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──────────────────────────────────────────────────────────╯"
+" enter diff  a activate  r refresh  / filter  ? help  q quit"

@@ -1,0 +1,28 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" github:jjant/nix-config @ 42ea902 · 2h ago   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 ⠼ "
+"╭──────────────────────────────────────────────────────────────────────────────╮"
+"│   HOST           STATUS            GEN  ACTIVATED  DETAIL                    │"
+"│ ▶ al2-aarch╭ hostctl keys ──────────────────────────────────────╮o old) · g… │"
+"│   al2-x86_6│ Hosts                         Diff                 │r profile   │"
+"│   al2023-x8│ ↑↓ j k    move                ↑↓ j k    scroll     │            │"
+"│   bigmem • │ g G       first / last        b         build it   │tion        │"
+"│   builder  │ PgUp PgDn page                a         activate   │nded early… │"
+"│   desk     │ enter d   closure diff        r         diff again │-gen.drv' … │"
+"│   mac-m1   │ a         activate            q esc     back       │ from a de… │"
+"│   pi       │ y         copy command                             │ resolve h… │"
+"│   web1     │ r         check again         Status               │cialisatio… │"
+"│   web2     │ /         filter              ✓ up to date         │/reboot pe… │"
+"│   web3     │ s         sort                ✗ outdated           │erent build │"
+"│   web4     │ J K       scroll details      ○ not activated      │            │"
+"╰────────────│ esc       clear filter        ! failed             │────────────╯"
+"╭ al2-aarch64│ q         quit                ? unreachable        │b7c5f39.d…──╮"
+"│ current  aa│                               – offline            │o ago       │"
+"│ desired  bb│                               ⠋ checking           │            │"
+"│ drift    on│                               • this machine       │            │"
+"│ compare  ht╰──────────────────────────────────── any key closes ╯...42ea9021 │"
+"│          31b93c04d098d3bcd02f29305b4bad7c                                    │"
+"╰───────────────────────────────────────────────────────────── 1–5 of 14 · J/K ╯"
+"                                                                                "

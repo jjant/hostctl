@@ -1,0 +1,24 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" github:jjant/nix-config @ 42ea902     2✓ 4✗ 1○ 2! 1? 1– 1⠼ "
+"╭──╭ hostctl keys ──────────────────────────────────────╮──╮"
+"│  │ Hosts                         Diff                 │  │"
+"│ ▶│ ↑↓ j k    move                ↑↓ j k    scroll     │… │"
+"│  │ g G       first / last        b         build it   │… │"
+"│  │ PgUp PgDn page                a         activate   │  │"
+"│  │ enter d   closure diff        r         diff again │  │"
+"│  │ a         activate            q esc     back       │… │"
+"│  │ y         copy command                             │… │"
+"│  │ r         check again         Status               │… │"
+"│  │ /         filter              ✓ up to date         │… │"
+"╰──│ s         sort                ✗ outdated           │2 ╯"
+"╭ a│ J K       scroll details      ○ not activated      │──╮"
+"│ c│ esc       clear filter        ! failed             │  │"
+"│  │ q         quit                ? unreachable        │  │"
+"│ d│                               – offline            │  │"
+"│ d│                               ⠋ checking           │  │"
+"│ c│                               • this machine       │2 │"
+"╰──╰──────────────────────────────────── any key closes ╯K ╯"
+"                                                            "

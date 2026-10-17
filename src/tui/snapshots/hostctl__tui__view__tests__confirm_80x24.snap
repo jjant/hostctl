@@ -1,0 +1,28 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" github:jjant/nix-config @ 42ea902 · 2h ago   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 ⠼ "
+"╭──────────────────────────────────────────────────────────────────────────────╮"
+"│   HOST           STATUS            GEN  ACTIVATED  DETAIL                    │"
+"│ ▶ al2-aarch64    ✗ outdated         93  4mo ago    on 1a2b3c4 (4mo old) · g… │"
+"│   al2-x86_64     ○ not activated                   no home-manager profile   │"
+"│ ╭ Activate al2-aarch64? ───────────────────────────────────────────────────╮ │"
+"│ │                                                                          │ │"
+"│ │ out=$(nix --extra-experimental-features 'nix-command flakes' build       │ │"
+"│ │ --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d09 │ │"
+"│ │ 8d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznG │ │"
+"│ │ gaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [   │ │"
+"│ │ "$out" =                                                                 │ │"
+"│ │ /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-home-manager-generation ] && │ │"
+"│ │ "$out/activate"                                                          │ │"
+"│ │                                                                          │ │"
+"╰─│ runs on al2-aarch64 (devhost-devuser1-2c-2b7c5f39.dc-west2.example.com)  │─╯"
+"╭ │                                                                          │─╮"
+"│ ╰──────────────────────────────────────────────────────── y run · n cancel ╯ │"
+"│ desired  bbbbbbbb-home-manager-generation · 42ea902                          │"
+"│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                           │"
+"│ compare  https://github.com/jjant/nix-config/compare/1a2b3c4d5e6f...42ea9021 │"
+"│          31b93c04d098d3bcd02f29305b4bad7c                                    │"
+"╰───────────────────────────────────────────────────────────── 1–5 of 14 · J/K ╯"
+"                                                                                "

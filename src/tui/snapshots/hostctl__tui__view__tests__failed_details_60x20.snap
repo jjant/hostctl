@@ -1,0 +1,24 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" github:jjant/nix-config @ 42ea902     2✓ 4✗ 1○ 2! 1? 1– 1⠼ "
+" ! ssh.command "ssh" can't be run: No such file or directory"
+"╭─────────────────────────────────────────────── by status ╮"
+"│   HOST           STATUS            DETAIL                │"
+"│ ▶ desk           ! eval failed     path 'wdfh0jh5-gen.d… │"
+"│   builder        ! probe failed    probe output ended e… │"
+"│   pi             ? unreachable     ssh: Could not resol… │"
+"│   al2-aarch64    ✗ outdated        on 1a2b3c4 (4mo old)… │"
+"│   bigmem •       ✗ outdated        unknown generation    │"
+"│   web2           ✗ outdated        staged: switch/reboo… │"
+"│   web3           ✗ outdated        same rev, different … │"
+"│   al2-x86_64     ○ not activated   no home-manager prof… │"
+"╰─────────────────────────────────────────────── 1–8 of 12 ╯"
+"╭ desk · nixos · x86_64-linux · ssh ───────────────────────╮"
+"│ current  gggggggg-nixos-system-desk-25.11 · gen 41 ·     │"
+"│          activated 1w ago                                │"
+"│ desired  eval failed: path '/nix/store/wdfh0jh598v4qshmc │"
+"│          s296ri45p0win4b-gen.drv' is not valid           │"
+"╰───────────────────────────────────────── 1–4 of 44 · J/K ╯"
+" enter diff  a activate  r refresh  / filter  ? help  q quit"

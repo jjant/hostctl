@@ -1,0 +1,14 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" 42ea9╭ hostctl keys ────────────╮1– 1⠼ "
+"╭─────│ Hosts                    │─────╮"
+"│   HO│ ↑↓ j k    move           │     │"
+"│ ▶ al│ g G       first / last   │     │"
+"│   al│ PgUp PgDn page           │     │"
+"│   al│ enter d   closure diff   │s    │"
+"│   bi│ a         activate       │     │"
+"│   bu│ y         copy command   │     │"
+"╰─────│ …                        │f 12 ╯"
+"      ╰────────── any key closes ╯      "

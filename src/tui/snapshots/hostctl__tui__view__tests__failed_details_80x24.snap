@@ -1,0 +1,28 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" github:jjant/nix-config @ 42ea902 · 2h ago   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 ⠼ "
+" ! ssh.command "ssh" can't be run: No such file or directory                    "
+"╭─────────────────────────────────────────────────────────────────── by status ╮"
+"│   HOST           STATUS            GEN  ACTIVATED  DETAIL                    │"
+"│ ▶ desk           ! eval failed      41  1w ago     path 'wdfh0jh5-gen.drv' … │"
+"│   builder        ! probe failed                    probe output ended early… │"
+"│   pi             ? unreachable                     ssh: Could not resolve h… │"
+"│   al2-aarch64    ✗ outdated         93  4mo ago    on 1a2b3c4 (4mo old) · g… │"
+"│   bigmem •       ✗ outdated          9  12m ago    unknown generation        │"
+"│   web2           ✗ outdated         51  1d ago     staged: switch/reboot pe… │"
+"│   web3           ✗ outdated         77  30m ago    same rev, different build │"
+"│   al2-x86_64     ○ not activated                   no home-manager profile   │"
+"│   al2023-x86_64  ⠼ evaluating 11s   12  3d ago                               │"
+"│   mac-m1         – offline                         reachable only from a de… │"
+"│   web1           ✓ up to date      230  2h ago     ⟳ reboot · specialisatio… │"
+"│   web4           ✓ up to date        5  1mo ago                              │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"╭ desk · nixos · x86_64-linux · ssh ───────────────────────────────────────────╮"
+"│ current  gggggggg-nixos-system-desk-25.11 · gen 41 · activated 1w ago        │"
+"│ desired  eval failed: path                                                   │"
+"│          '/nix/store/wdfh0jh598v4qshmcs296ri45p0win4b-gen.drv' is not valid  │"
+"│          error:                                                              │"
+"╰───────────────────────────────────────────────────────────── 1–4 of 34 · J/K ╯"
+" enter diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit    "

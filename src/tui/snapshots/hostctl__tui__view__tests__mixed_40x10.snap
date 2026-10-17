@@ -1,0 +1,14 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+" 42ea902           2✓ 4✗ 1○ 2! 1? 1– 1⠼ "
+"╭──────────────────────────────────────╮"
+"│   HOST           STATUS              │"
+"│ ▶ al2-aarch64    ✗ outdated          │"
+"│   al2-x86_64     ○ not activated     │"
+"│   al2023-x86_64  ⠼ evaluating 11s    │"
+"│   bigmem •       ✗ outdated          │"
+"│   builder        ! probe failed      │"
+"╰─────────────────────────── 1–5 of 12 ╯"
+" enter diff  a activate  ? help  q quit "
