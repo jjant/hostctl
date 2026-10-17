@@ -8,6 +8,7 @@ pub mod closure;
 pub mod config;
 pub mod exec;
 pub mod local;
+pub mod model;
 pub mod nix;
 pub mod probe;
 pub mod remote;
