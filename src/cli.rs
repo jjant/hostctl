@@ -800,19 +800,33 @@ async fn diff(
         Ok(DiffOutcome::DesiredMissing) => Err(Exit::Trouble(if build {
             format!("the new generation of {name} is still missing after the build")
         } else {
-            format!(
-                "the new generation of {name} isn't built anywhere yet: \
-                 `{} diff --build {}` builds it {}",
-                setup.command,
-                crate::remote::sh_quote(&name),
-                build_place(host)
-            )
+            desired_missing(host, &setup.command)
         })),
         Err(e) => Err(Exit::Trouble(format!(
             "can't diff {name}: {}",
             describe(&e)
         ))),
     }
+}
+
+/// Why `diff` has no desired closure to compare: it is in none of the
+/// stores the diff looked in (this machine's, and the host's when it has
+/// a shell), which doesn't mean it was never built; and how to fetch or
+/// build it (`hostctl` is how to run hostctl again in this context).
+fn desired_missing(host: &Host, hostctl: &str) -> String {
+    let name = util::one_line(&host.name);
+    let listed = host.ssh().is_some_and(|ssh| ssh.forced_command.is_none());
+    let stores = if listed {
+        format!("this machine's or {name}'s store")
+    } else {
+        "this machine's store".into()
+    };
+    format!(
+        "the new generation of {name} isn't in {stores} yet (a binary cache may have it): \
+         `{hostctl} diff --build {}` fetches or builds it {}",
+        remote::sh_quote(&name),
+        build_place(host)
+    )
 }
 
 /// The current and desired generations of a checked host, or why they
@@ -2064,6 +2078,31 @@ mod tests {
         assert_eq!(
             diff_inputs(&state.hosts[3]).unwrap_err(),
             "d's configuration doesn't evaluate: attribute 'd' missing"
+        );
+    }
+
+    #[test]
+    fn a_missing_new_generation_may_just_not_be_fetched_yet() {
+        assert_eq!(
+            desired_missing(&host("web1"), "hostctl -c /etc/hosts.toml"),
+            "the new generation of web1 isn't in this machine's or web1's store yet (a binary \
+             cache may have it): `hostctl -c /etc/hosts.toml diff --build web1` fetches or \
+             builds it on web1"
+        );
+        assert_eq!(
+            desired_missing(&local("bigmem", false), "hostctl"),
+            "the new generation of bigmem isn't in this machine's store yet (a binary cache may \
+             have it): `hostctl diff --build bigmem` fetches or builds it here"
+        );
+        let mut pushed = host("web2");
+        pushed.activate_on = ActivateOn::Local;
+        assert!(
+            desired_missing(&pushed, "hostctl").ends_with(
+                "in this machine's or web2's store yet (a binary cache may have it): \
+                 `hostctl diff --build web2` fetches or builds it here"
+            ),
+            "{}",
+            desired_missing(&pushed, "hostctl")
         );
     }
 

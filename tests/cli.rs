@@ -1550,8 +1550,8 @@ fn diff_says_when_the_new_generation_is_nowhere_yet() {
     run.code(2);
     assert_eq!(
         run.stderr,
-        "error: the new generation of web1 isn't built anywhere yet: \
-         `hostctl diff --build web1` builds it on web1\n"
+        "error: the new generation of web1 isn't in this machine's or web1's store yet (a binary \
+         cache may have it): `hostctl diff --build web1` fetches or builds it on web1\n"
     );
     assert_eq!(run.stdout, "");
 
