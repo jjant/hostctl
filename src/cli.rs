@@ -484,21 +484,27 @@ async fn find_hosts(
                 flake_hosts = Some(hosts);
             }
             Err(e) if !config.hosts.is_empty() => warn(&format!(
-                "can't read the hosts of {flake}: {}; checking the configured hosts only",
-                e.summary
+                "{}; checking the configured hosts only",
+                hosts_error(flake, &e.summary)
             )),
-            Err(e) => {
-                return Err(Exit::Usage(format!(
-                    "can't read the hosts of {flake}: {}",
-                    describe(&e)
-                )));
-            }
+            Err(e) => return Err(Exit::Usage(hosts_error(flake, &describe(&e)))),
         }
     }
     let resolved = config
         .resolve_hosts(flake_hosts.as_ref(), &setup.local)
         .map_err(|e| Exit::Usage(format!("{e:#}")))?;
     Ok((resolved, known))
+}
+
+/// `can't read the hosts of <flake>: <why>`, said once: the errors of
+/// [`Engine::discover`]'s own evaluation already start like that.
+fn hosts_error(flake: &str, why: &str) -> String {
+    let prefix = format!("can't read the hosts of {flake}: ");
+    if why.starts_with(&prefix) {
+        why.to_string()
+    } else {
+        prefix + why
+    }
 }
 
 /// What to say when there are no hosts at all.
@@ -1536,6 +1542,16 @@ mod tests {
             "no hosts (exclude drops *-iso): discover = false; \
              add [hosts.<name>] tables to /home/u/.config/hostctl/config.toml"
         );
+    }
+
+    #[test]
+    fn failing_to_read_the_hosts_names_the_flake_once() {
+        assert_eq!(
+            hosts_error("github:o/r", "unable to download"),
+            "can't read the hosts of github:o/r: unable to download"
+        );
+        let from_discovery = "can't read the hosts of github:o/r: attribute 'hostctl' missing";
+        assert_eq!(hosts_error("github:o/r", from_discovery), from_discovery);
     }
 
     #[test]
