@@ -1,5 +1,5 @@
 {
-  description = "hostctl: are your Nix hosts running the configuration their flake describes?";
+  description = "hostctl: check whether your Nix hosts run their flake's current configuration";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 

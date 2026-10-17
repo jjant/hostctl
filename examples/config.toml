@@ -1,9 +1,8 @@
 # hostctl: an annotated example configuration.
 #
-# hostctl answers one question: is every host running the configuration its
-# flake currently describes? This file describes one person's machines (four
-# Linux machines running standalone home-manager and a Mac running nix-darwin,
-# all built from github:jjant/nix-config) and documents every option.
+# This file describes one person's machines (four Linux machines running
+# standalone home-manager and a Mac running nix-darwin, all built from
+# github:jjant/nix-config) and documents every option.
 # Commented-out lines show defaults or alternatives.
 #
 # Where hostctl looks: --config FILE, then $HOSTCTL_CONFIG, then

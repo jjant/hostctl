@@ -1,9 +1,9 @@
 # hostctl — design (v2, after design review)
 
-`hostctl` answers one question fast: **is every host running the configuration
-its flake currently describes?** It started as a `hosts status` shell script
-and is now a standalone Rust tool with a TUI, for NixOS, nix-darwin and
-standalone home-manager hosts.
+`hostctl` checks whether every host runs the configuration its flake currently
+describes, and does it fast. It started as a `hosts status` shell script and is
+now a standalone Rust tool with a TUI, for NixOS, nix-darwin and standalone
+home-manager hosts.
 
 Non-goals: being a deployment orchestrator (deploy-rs, colmena), a daemon, or an
 SSH library. hostctl shells out to the user's `nix` and `ssh`, so their

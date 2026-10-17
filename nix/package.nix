@@ -80,7 +80,7 @@ rustPlatform.buildRustPackage {
   '';
 
   meta = {
-    description = "See at a glance whether your Nix hosts run what their flake describes";
+    description = "Check whether your Nix hosts run their flake's current configuration";
     homepage = "https://github.com/jjant/hostctl";
     license = lib.licenses.mit;
     mainProgram = "hostctl";
