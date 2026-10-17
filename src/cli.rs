@@ -426,6 +426,9 @@ struct Setup {
     color: bool,
     /// How to run hostctl again in this context ([`AppState::command`]).
     command: String,
+    /// The flake is the current directory's `./flake.nix`, because nothing
+    /// else set one: messages say so.
+    flake_here: bool,
 }
 
 impl Setup {
@@ -445,10 +448,12 @@ impl Setup {
             })
             .map_err(|e| Exit::Usage(format!("{e:#}")))?;
         let mut command = hostctl.to_string();
+        let mut here = false;
         if config.flake.is_none() {
             config.flake = flake_here(std::env::current_dir().ok().as_deref());
             if let Some(flake) = &config.flake {
                 command.push_str(&format!(" -f {}", remote::sh_quote(flake)));
+                here = true;
             }
         }
         let local = LocalInfo::detect(config.self_host.clone());
@@ -465,11 +470,42 @@ impl Setup {
             freshness: freshness(global.refresh, global.offline),
             color,
             command,
+            flake_here: here,
         })
     }
 
     fn style(&self) -> Style {
         Style { color: self.color }
+    }
+
+    /// When the flake is the current directory's ([`Setup::flake_here`]):
+    /// why (`no config file (looked in …) and no flake set, so ./flake.nix
+    /// (<dir>) was used`) and how to choose another.
+    fn flake_here_note(&self) -> Option<(String, String)> {
+        let dir = util::one_line(self.config.flake.as_deref().filter(|_| self.flake_here)?);
+        Some(match &self.path {
+            None => {
+                let looked: Vec<String> = Config::search_paths()
+                    .iter()
+                    .map(|p| util::one_line(&p.display().to_string()).into_owned())
+                    .collect();
+                (
+                    format!(
+                        "no config file (looked in {}) and no flake set, so ./flake.nix \
+                         ({dir}) was used",
+                        looked.join(", ")
+                    ),
+                    "pass -c FILE or --flake, or set HOSTCTL_CONFIG".into(),
+                )
+            }
+            Some(file) => {
+                let file = util::one_line(&file.display().to_string()).into_owned();
+                (
+                    format!("{file} sets no flake, so ./flake.nix ({dir}) was used"),
+                    format!("set flake = \"…\" in {file}, or pass --flake"),
+                )
+            }
+        })
     }
 }
 
@@ -530,7 +566,11 @@ async fn dispatch(
     let (resolved, known) = find_hosts(setup, engine, signals).await?;
     let Resolved { hosts, warnings } = resolved;
     if hosts.is_empty() {
-        return Err(Exit::Usage(no_hosts(&setup.config, setup.path.as_deref())));
+        return Err(Exit::Usage(no_hosts(
+            &setup.config,
+            setup.path.as_deref(),
+            setup.flake_here_note(),
+        )));
     }
     let hosts = select(hosts, check.patterns()).map_err(Exit::Usage)?;
     if let Check::Hosts { .. } = check {
@@ -577,16 +617,24 @@ async fn find_hosts(
         let discovered = live::wait_for(&label, engine.discover(flake), signals)
             .await
             .ok_or(Exit::Interrupted)?;
+        let note = setup.flake_here_note();
         match discovered {
             Ok((info, hosts)) => {
                 known.push(info);
                 flake_hosts = Some(hosts);
             }
             Err(e) if !config.hosts.is_empty() => warn(&format!(
-                "{}; checking the configured hosts only",
-                hosts_error(flake, &e.summary)
+                "{}; checking the configured hosts only{}",
+                hosts_error(flake, &e.summary),
+                note.map(|(why, _)| format!(" ({why})")).unwrap_or_default()
             )),
-            Err(e) => return Err(Exit::Usage(hosts_error(flake, &describe(&e)))),
+            Err(e) => {
+                let mut message = hosts_error(flake, &describe(&e));
+                if let Some((why, what)) = note {
+                    message.push_str(&format!("\nhint: {why}; {what}"));
+                }
+                return Err(Exit::Usage(message));
+            }
         }
     }
     let resolved = config
@@ -606,8 +654,9 @@ fn hosts_error(flake: &str, why: &str) -> String {
     }
 }
 
-/// What to say when there are no hosts at all.
-fn no_hosts(config: &Config, path: Option<&Path>) -> String {
+/// What to say when there are no hosts at all; `here` is
+/// [`Setup::flake_here_note`] (the flake is the current directory's).
+fn no_hosts(config: &Config, path: Option<&Path>, here: Option<(String, String)>) -> String {
     let file = match path {
         Some(path) => path.display().to_string(),
         None => Config::search_paths()
@@ -620,18 +669,22 @@ fn no_hosts(config: &Config, path: Option<&Path>) -> String {
         format!(" (exclude drops {})", config.exclude.join(", "))
     };
     let tables = format!("add [hosts.<name>] tables to {file}");
-    match config.flake.as_deref() {
-        Some(flake) if config.discover => format!(
-            "no hosts{excluded}: {flake} has no nixosConfigurations, darwinConfigurations or \
-             homeConfigurations{}; {tables}, or point --flake at another flake",
-            if config.inventory.is_empty() {
-                String::new()
-            } else {
-                format!(" (nor {}.hosts)", config.inventory)
-            }
+    let nor = if config.inventory.is_empty() {
+        String::new()
+    } else {
+        format!(" (nor {}.hosts)", config.inventory)
+    };
+    match (config.flake.as_deref(), here) {
+        (Some(_), Some((why, what))) if config.discover => format!(
+            "no hosts{excluded}: {why}: it has no nixosConfigurations, darwinConfigurations or \
+             homeConfigurations{nor}; {what}"
         ),
-        Some(_) => format!("no hosts{excluded}: discover = false; {tables}"),
-        None => format!(
+        (Some(flake), _) if config.discover => format!(
+            "no hosts{excluded}: {flake} has no nixosConfigurations, darwinConfigurations or \
+             homeConfigurations{nor}; {tables}, or point --flake at another flake"
+        ),
+        (Some(_), _) => format!("no hosts{excluded}: discover = false; {tables}"),
+        (None, _) => format!(
             "no hosts to check{excluded}: point --flake (or flake = \"…\" in the config) at a \
              flake with nixosConfigurations, darwinConfigurations or homeConfigurations, or \
              {tables}"
@@ -1717,7 +1770,7 @@ mod tests {
     fn no_hosts_explains_where_they_come_from() {
         let mut config = Config::default();
         let file = Path::new("/home/u/.config/hostctl/config.toml");
-        let none = no_hosts(&config, Some(file));
+        let none = no_hosts(&config, Some(file), None);
         assert!(
             none.starts_with("no hosts to check: point --flake"),
             "{none}"
@@ -1725,7 +1778,7 @@ mod tests {
         assert!(none.contains("[hosts.<name>] tables to /home/u/.config/hostctl/config.toml"));
 
         config.flake = Some("github:o/r".into());
-        let empty = no_hosts(&config, Some(file));
+        let empty = no_hosts(&config, Some(file), None);
         assert!(
             empty.starts_with("no hosts: github:o/r has no nixosConfigurations"),
             "{empty}"
@@ -1735,10 +1788,60 @@ mod tests {
         config.discover = false;
         config.exclude = vec!["*-iso".into()];
         assert_eq!(
-            no_hosts(&config, Some(file)),
+            no_hosts(&config, Some(file), None),
             "no hosts (exclude drops *-iso): discover = false; \
              add [hosts.<name>] tables to /home/u/.config/hostctl/config.toml"
         );
+    }
+
+    #[test]
+    fn a_flake_found_in_the_current_directory_is_explained() {
+        let mut setup = Setup {
+            config: Config {
+                flake: Some("/home/u/src/proj".into()),
+                ..Config::default()
+            },
+            path: Some(PathBuf::from("/home/u/.config/hostctl/config.toml")),
+            local: LocalInfo {
+                hostname: "b".into(),
+                user: "u".into(),
+                os: crate::local::Os::Linux,
+                forced: None,
+            },
+            freshness: Freshness::Auto,
+            color: false,
+            command: "hostctl -f /home/u/src/proj".into(),
+            flake_here: true,
+        };
+        let note = setup.flake_here_note().unwrap();
+        assert_eq!(
+            note,
+            (
+                "/home/u/.config/hostctl/config.toml sets no flake, so ./flake.nix \
+                 (/home/u/src/proj) was used"
+                    .to_string(),
+                "set flake = \"…\" in /home/u/.config/hostctl/config.toml, or pass --flake"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            no_hosts(&setup.config, setup.path.as_deref(), Some(note)),
+            "no hosts: /home/u/.config/hostctl/config.toml sets no flake, so ./flake.nix \
+             (/home/u/src/proj) was used: it has no nixosConfigurations, darwinConfigurations or \
+             homeConfigurations (nor lib.hostctl.hosts); set flake = \"…\" in \
+             /home/u/.config/hostctl/config.toml, or pass --flake"
+        );
+        setup.path = None;
+        let (why, what) = setup.flake_here_note().unwrap();
+        assert!(why.starts_with("no config file (looked in "), "{why}");
+        assert!(
+            why.ends_with(") and no flake set, so ./flake.nix (/home/u/src/proj) was used"),
+            "{why}"
+        );
+        assert_eq!(what, "pass -c FILE or --flake, or set HOSTCTL_CONFIG");
+        // A flake that was set needs no explaining.
+        setup.flake_here = false;
+        assert_eq!(setup.flake_here_note(), None);
     }
 
     #[test]
@@ -1861,6 +1964,7 @@ mod tests {
             freshness: Freshness::Auto,
             color: false,
             command: "hostctl -c /etc/hostctl/config.toml".into(),
+            flake_here: false,
         };
         let state = selection.state(&setup);
         assert_eq!(state.hosts.len(), 2);

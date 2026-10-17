@@ -393,6 +393,80 @@ fn no_hosts_at_all_exits_3() {
     );
 }
 
+/// The world's directory is a flake (with nothing for hostctl in it), and
+/// hostctl has no config file: it falls back to `./flake.nix`.
+fn world_in_a_flake() -> World {
+    let w = World::new();
+    std::fs::remove_file(&w.config_file).unwrap();
+    std::fs::write(w.root().join("flake.nix"), "{ outputs = _: { }; }\n").unwrap();
+    let here = w.root().display().to_string();
+    let modified = now() - 60;
+    let metadata = json!({
+        "lastModified": modified,
+        "locked": { "lastModified": modified, "narHash": "sha256-here", "path": here, "type": "path" },
+        "original": { "path": here, "type": "path" },
+        "path": "/nix/store/00000000000000000000000000000000-source",
+        "url": format!("path:{here}?lastModified={modified}&narHash=sha256-here"),
+    });
+    let key: String = here
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let file = w.fake.join("flakes").join(key).join("metadata.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, metadata.to_string()).unwrap();
+    w
+}
+
+#[test]
+fn the_flake_in_the_working_directory_says_why_it_was_used() {
+    if std::path::Path::new("/etc/hostctl/config.toml").exists() {
+        eprintln!("skipping: /etc/hostctl/config.toml would be read");
+        return;
+    }
+    let w = world_in_a_flake();
+    let here = w.root().display().to_string();
+    let run = w.run(&["status"]);
+    run.code(3);
+    let config = w.config_file.display().to_string();
+    assert_eq!(
+        run.stderr,
+        format!(
+            "error: no hosts: no config file (looked in {config}, /etc/hostctl/config.toml) and \
+             no flake set, so ./flake.nix ({here}) was used: it has no nixosConfigurations, \
+             darwinConfigurations or homeConfigurations (nor lib.hostctl.hosts); pass -c FILE \
+             or --flake, or set HOSTCTL_CONFIG\n"
+        )
+    );
+
+    // Nor when its hosts can't be read (the empty list above is cached).
+    w.discover(json!(null))
+        .stderr("error: attribute 'outputs' missing\n")
+        .exit(1);
+    let run = w.run(&["status", "--no-cache"]);
+    run.code(3);
+    assert!(
+        run.stderr.starts_with(&format!(
+            "error: can't read the hosts of {here}: attribute 'outputs' missing\n"
+        )),
+        "{run}"
+    );
+    assert!(
+        run.stderr.ends_with(&format!(
+            "\nhint: no config file (looked in {config}, /etc/hostctl/config.toml) and no flake \
+             set, so ./flake.nix ({here}) was used; pass -c FILE or --flake, or set \
+             HOSTCTL_CONFIG\n"
+        )),
+        "{run}"
+    );
+}
+
 #[test]
 fn discovery_that_fails_without_configured_hosts_exits_3() {
     let w = World::new();
