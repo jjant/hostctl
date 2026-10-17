@@ -110,8 +110,8 @@ impl Ctx<'_> {
 }
 
 /// Styles, with and without colors: the status colors (green ✓, yellow ✗
-/// ○, red !, magenta ?), cyan for activity and the cursor, gray borders,
-/// dim secondary text.
+/// ○, red !, magenta ?), cyan for activity and the selection's `▶`, gray
+/// borders, dim secondary text, the selected host reversed.
 #[derive(Debug, Clone, Copy)]
 struct Theme {
     color: bool,
@@ -182,15 +182,12 @@ impl Theme {
         }
     }
 
-    /// The selected row: a gray band, or reversed without colors. Dim text
-    /// on it would be hard to read, so it isn't dim there.
-    fn selection(self) -> Style {
-        let style = if self.color {
-            Style::new().bg(Color::DarkGray)
-        } else {
-            Style::new().add_modifier(Modifier::REVERSED)
-        };
-        style.remove_modifier(Modifier::DIM)
+    /// The selected row's HOST cell (after its `▶`): reversed, with or
+    /// without colors. Nothing else of the row gets a background, so status
+    /// colors stay on the terminal's own (a gray band under red or magenta
+    /// is unreadable in common palettes).
+    fn cursor(self) -> Style {
+        Style::new().add_modifier(Modifier::REVERSED)
     }
 }
 
@@ -676,8 +673,16 @@ impl Columns {
         Row::new(cells).style(t.dim())
     }
 
-    fn row(&self, r: HostRow, t: Theme) -> Row<'static> {
-        let mut cells = vec![Cell::from(Line::from(fit(r.name, self.host)))];
+    /// `r`'s cells; the selected row's HOST cell is [`Theme::cursor`], its
+    /// text unstyled so that it reverses evenly.
+    fn row(&self, r: HostRow, t: Theme, selected: bool) -> Row<'static> {
+        let name = if selected {
+            let plain = r.name.into_iter().map(|s| Span::raw(s.content));
+            Cell::from(Line::from(fit(plain.collect(), self.host))).style(t.cursor())
+        } else {
+            Cell::from(Line::from(fit(r.name, self.host)))
+        };
+        let mut cells = vec![name];
         if let Some(w) = self.kind {
             cells.push(Cell::from(Span::styled(
                 util::truncate(r.kind, w).into_owned(),
@@ -778,11 +783,13 @@ fn draw_hosts(
     };
     // The selection marker takes two columns.
     let cols = Columns::fit(usize::from(inner.width.saturating_sub(2)), natural);
+    let selected_row = at.filter(|i| (offset..end).contains(i)).map(|i| i - offset);
     let body: Vec<Row> = rows
         .into_iter()
         .skip(offset)
         .take(end - offset)
-        .map(|r| cols.row(r, t))
+        .enumerate()
+        .map(|(i, r)| cols.row(r, t, selected_row == Some(i)))
         .collect();
     let table = Table::new(body, cols.constraints())
         .header(cols.header(t))
@@ -792,9 +799,7 @@ fn draw_hosts(
             Span::raw(" "),
         ]))
         .highlight_spacing(HighlightSpacing::Always)
-        .row_highlight_style(t.selection())
         .block(block);
-    let selected_row = at.filter(|i| (offset..end).contains(i)).map(|i| i - offset);
     let mut state = TableState::default().with_selected(selected_row);
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -2399,16 +2404,19 @@ mod tests {
         assert!(cell("unknown generation").modifier.contains(Modifier::DIM));
         assert!(!cell("probe output ended").modifier.contains(Modifier::DIM));
         assert_eq!(cell("⟳ reboot").fg, Color::Yellow);
-        // The selected row is a gray band, undimmed; the others aren't.
+        // The selection: ▶ and the HOST cell reversed, no colored band.
         let selected = row_of(buffer, "▶ al2-aarch64");
-        for x in 2..118 {
-            let c = &buffer[(x, selected)];
-            assert_eq!(c.bg, Color::DarkGray, "x={x}");
-            assert!(!c.modifier.contains(Modifier::DIM), "x={x}");
-        }
         assert_eq!(cell("▶").fg, Color::Cyan);
+        for x in 4..17 {
+            let c = &buffer[(x, selected)];
+            assert!(c.modifier.contains(Modifier::REVERSED), "x={x}");
+            assert_eq!((c.fg, c.bg), (Color::Reset, Color::Reset), "x={x}");
+        }
+        for x in 0..120 {
+            assert_eq!(buffer[(x, selected)].bg, Color::Reset, "x={x}");
+        }
         let other = row_of(buffer, "al2-x86_64");
-        assert_eq!(buffer[(5, other)].bg, Color::Reset);
+        assert!(!buffer[(5, other)].modifier.contains(Modifier::REVERSED));
         // Gray borders, titles in the normal color, the revision bold.
         assert_eq!(buffer[(0, 1)].symbol(), "╭");
         assert_eq!(buffer[(0, 1)].fg, Color::DarkGray);
@@ -2420,6 +2428,39 @@ mod tests {
         let counts = row_of(buffer, "2 ✓");
         assert_eq!(counts, 0);
         assert_eq!(cell("✓  4").fg, Color::Green);
+    }
+
+    #[test]
+    fn a_selected_row_keeps_its_status_colors_on_the_default_background() {
+        // Red or magenta on a gray band is unreadable in common palettes
+        // (Alacritty's default red on its gray: 1.09:1).
+        for (name, status, color) in [
+            ("desk", "! eval failed", Color::Red),
+            ("pi", "? unreachable", Color::Magenta),
+            ("bigmem", "✗ outdated", Color::Yellow),
+        ] {
+            let (mut app, now) = mixed_app();
+            app.color = true;
+            app.select(id_of(&app, name));
+            let terminal = render(&app, (120, 32), now);
+            let buffer = terminal.backend().buffer();
+            let y = row_of(buffer, &format!("▶ {name}"));
+            let (x, _) = find(buffer, status).expect("status shown");
+            for x in x..x + status.chars().count() as u16 {
+                let c = &buffer[(x, y)];
+                assert_eq!((c.fg, c.bg), (color, Color::Reset), "{name} x={x}");
+                assert!(!c.modifier.contains(Modifier::REVERSED), "{name} x={x}");
+            }
+            for x in 0..120 {
+                assert_eq!(buffer[(x, y)].bg, Color::Reset, "{name} x={x}");
+            }
+            // The local marker is reversed with the name, not a cyan block.
+            if name == "bigmem" {
+                let (x, _) = find(buffer, "•").expect("marker shown");
+                assert_eq!(buffer[(x, y)].fg, Color::Reset);
+                assert!(buffer[(x, y)].modifier.contains(Modifier::REVERSED));
+            }
+        }
     }
 
     #[test]
@@ -2484,8 +2525,11 @@ mod tests {
                 assert_eq!((c.fg, c.bg), (Color::Reset, Color::Reset), "{name}: {c:?}");
             }
             if name == "mixed" {
+                // The selected host is reversed, the rest of its row isn't.
                 let y = row_of(buffer, "▶ al2-aarch64");
                 assert!(buffer[(10, y)].modifier.contains(Modifier::REVERSED));
+                let (status, _) = find(buffer, "✗ outdated").expect("status shown");
+                assert!(!buffer[(status, y)].modifier.contains(Modifier::REVERSED));
             }
         }
     }
