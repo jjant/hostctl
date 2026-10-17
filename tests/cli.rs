@@ -939,6 +939,127 @@ fn probes_start_while_the_flake_resolves() {
     assert!(w.nix_calls("eval --json").is_empty(), "no discovery");
 }
 
+/// The duration ending a status table's footer, in milliseconds.
+fn took_ms(table: &str) -> u64 {
+    // `2 up to date · 1.2s`: the counts come first.
+    let footer = table
+        .lines()
+        .find(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or_else(|| panic!("no footer in {table}"));
+    let took = footer.rsplit(" · ").next().unwrap();
+    match took.strip_suffix("ms") {
+        Some(ms) => ms.parse().unwrap(),
+        None => (took.strip_suffix('s').unwrap().parse::<f64>().unwrap() * 1000.0) as u64,
+    }
+}
+
+#[test]
+fn probes_start_while_the_flake_resolves_when_its_hosts_are_known() {
+    let w = World::new();
+    w.flake(REV1).delay(0.5);
+    discover_home(&w, &["web1", "web2"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('b'));
+    // Nothing known yet: the hosts are read first, and the time that takes
+    // counts too.
+    let first = w.run(&["status", "--plain"]);
+    first.code(0);
+    assert!(took_ms(&first.stdout) >= 500, "{first}");
+    let resolved = &w.resolutions()[0];
+    assert!(
+        w.calls()
+            .iter()
+            .filter(|c| c.tool == "ssh")
+            .all(|p| Some(p.start) > resolved.end),
+        "{}",
+        w.log()
+    );
+
+    // The branch has to be looked up again, which takes a while: the hosts
+    // read last time are probed meanwhile.
+    w.flake(REV1).delay(0.5);
+    w.clear_log();
+    let run = w.run(&["status", "--plain", "--refresh"]);
+    run.code(0);
+    let resolutions = w.resolutions();
+    assert_eq!(resolutions.len(), 1, "resolved once:\n{}", w.log());
+    let probes: Vec<Call> = w.calls().into_iter().filter(|c| c.tool == "ssh").collect();
+    assert_eq!(probes.len(), 2, "{}", w.log());
+    assert!(
+        probes.iter().all(|p| Some(p.start) < resolutions[0].end),
+        "probes started before the resolution ended:\n{}",
+        w.log()
+    );
+    assert_eq!(
+        table(&run),
+        "github:o/r @ 1111111 (2h ago)\n\
+         \n  web1  ✓ up to date  gen 5 · 3d ago\
+         \n  web2  ✓ up to date  gen 5 · 3d ago\n\
+         \n2 up to date · <took>\n"
+    );
+    // The time it took counts from the start: the resolution included.
+    assert!(took_ms(&run.stdout) >= 500, "{run}");
+}
+
+#[test]
+fn hosts_the_flake_no_longer_has_are_dropped_once_it_resolved() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('b'));
+    w.run(&["status"]).code(0);
+
+    // A new revision has web3 instead of web2.
+    w.flake(REV2).delay(0.3);
+    discover_home(&w, &["web1", "web3"]);
+    home_host(&w, "web3", &hm('c'), &hm('d'));
+    let run = w.run(&["status", "--plain", "--refresh"]);
+    run.code(1);
+    assert_eq!(
+        table(&run),
+        "github:o/r @ 2222222 (2h ago)\n\
+         \n  web1  ✓ up to date  gen 5 · 3d ago\
+         \n  web3  ✗ outdated    gen 5 · 3d ago · unknown generation\n\
+         \n1 outdated · 1 up to date · <took>\
+         \nupdate: hostctl activate web3\n"
+    );
+    assert_eq!(w.resolutions().len(), 2, "one per run:\n{}", w.log());
+    // The same for the JSON report, and for the hosts a pattern picks.
+    let json = w.run(&["status", "--json", "--refresh", "web*"]).json();
+    let names: Vec<&str> = json["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["web1", "web3"]);
+}
+
+#[test]
+fn the_live_table_starts_over_in_place_when_the_hosts_changed() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2", "web4"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('b'));
+    home_host(&w, "web4", &hm('d'), &hm('d'));
+    w.run(&["status"]).code(0);
+    w.flake(REV2).delay(0.4);
+    discover_home(&w, &["web1", "web3"]);
+    home_host(&w, "web3", &hm('c'), &hm('c'));
+    let pty = Pty::new(100, 30);
+    let child = pty.spawn(w.command(&["status", "--refresh"]));
+    assert_eq!(wait(child), 0, "{:?}", pty.output());
+    // What is left on the screen is what --plain prints, nothing of the
+    // hosts the check started with.
+    let plain = w.run(&["status", "--plain"]);
+    let screen = pty.screen(100, 30).rows().join("\n");
+    let shown = masked(&format!("{}\n", screen.trim_end()));
+    assert_eq!(shown, table(&plain), "{:?}", pty.output());
+    assert!(pty.output().contains("web2"), "it did start with them");
+}
+
 #[test]
 fn one_job_evaluates_one_configuration_at_a_time() {
     let w = World::new();
@@ -1911,6 +2032,36 @@ fn a_signal_at_the_press_enter_prompt_leaves_the_terminal_as_it_was() {
             "raw mode left behind ({flag:#x})"
         );
     }
+}
+
+#[test]
+fn the_dashboard_starts_with_the_hosts_read_last_and_reads_them_again() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('b'));
+    w.run(&["status"]).code(0);
+    // Since then, web2 went and web3 came.
+    w.flake(REV2).delay(0.3);
+    discover_home(&w, &["web1", "web3"]);
+    home_host(&w, "web3", &hm('c'), &hm('c'));
+    w.clear_log();
+    w.env("TERM", Some("xterm-256color"));
+    let pty = Pty::new(100, 30);
+    let child = pty.spawn(w.command(&["--refresh", "tui"]));
+    pty.wait_for_screen(100, 30, "the flake's hosts changed (new: web3; gone: web2)");
+    pty.wait_for_screen(100, 30, "web3  home-manager  ✓ up to date");
+    pty.send(b"q");
+    assert_eq!(wait(child), 0, "{}", pty.screen(100, 30).rows().join("\n"));
+    let resolutions = w.resolutions();
+    assert_eq!(resolutions.len(), 1, "{}", w.log());
+    let first_probe = w.calls().into_iter().find(|c| c.tool == "ssh").unwrap();
+    assert!(
+        Some(first_probe.start) < resolutions[0].end,
+        "probed at once:\n{}",
+        w.log()
+    );
 }
 
 #[test]

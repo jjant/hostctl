@@ -267,10 +267,7 @@ impl Engine {
         let key = version
             .as_deref()
             .and_then(|version| self.cache_key(version, &info))
-            .map(|key| {
-                let inventory = util::fnv1a64(config.inventory.as_bytes());
-                format!("{key}+{inventory:016x}")
-            });
+            .map(|key| format!("{key}{}", self.hosts_key_suffix()));
         if let Some(key) = &key
             && let Some(hosts) = self.with_cache(|cache| cache.hosts(key, util::now_unix()))
         {
@@ -302,6 +299,32 @@ impl Engine {
             self.with_cache(|cache| cache.record_hosts(key, &info, &hosts, util::now_unix()));
         }
         Ok((info, hosts))
+    }
+
+    /// The hosts `flake` (as configured) described the last time
+    /// [`Self::discover`] read them — at whatever revision that was — from
+    /// the cache, if it has them: what a check can start with while
+    /// discovery finds out whether they are still those. Runs nothing.
+    pub fn cached_hosts(&self, flake: &str) -> Option<FlakeHosts> {
+        if !self.inner.config.cache {
+            return None;
+        }
+        let suffix = self.hosts_key_suffix();
+        self.with_cache(|cache| {
+            let entries = cache.data().flakes.iter();
+            entries
+                .filter(|(key, entry)| entry.flake == flake && key.ends_with(&suffix))
+                .filter_map(|(_, entry)| Some((entry.used, entry.hosts.as_ref()?)))
+                .max_by_key(|(used, _)| *used)
+                .map(|(_, hosts)| hosts.clone())
+        })
+    }
+
+    /// What tells the cache entries of host lists apart from those of out
+    /// paths, and one `inventory` attribute's from another's.
+    fn hosts_key_suffix(&self) -> String {
+        let inventory = util::fnv1a64(self.inner.config.inventory.as_bytes());
+        format!("+{inventory:016x}")
     }
 
     /// One complete check, from [`Event::RunStarted`] to
@@ -4400,6 +4423,41 @@ error:
                 .values()
                 .any(|entry| entry.hosts.is_some())
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_hosts_read_last_are_at_hand_without_running_anything() {
+        let fake = world();
+        let locked = github(GITHUB, REV1).locked;
+        fake.on(&format!("hosts {locked}"), Reply::ok(HOSTS_JSON));
+        let engine = engine(&config(), Cache::in_memory(), &fake);
+        assert_eq!(engine.cached_hosts(GITHUB), None);
+        let (_, hosts) = engine.discover(GITHUB).await.unwrap();
+        let calls = fake.calls().len();
+        assert_eq!(engine.cached_hosts(GITHUB), Some(hosts));
+        assert_eq!(fake.calls().len(), calls);
+        assert_eq!(engine.cached_hosts("github:o/other"), None);
+        // Another inventory attribute's hosts aren't these.
+        let mut fleet = config();
+        fleet.inventory = "fleet".into();
+        let other = Engine::assemble(
+            &fleet,
+            cache_of(&engine),
+            Freshness::Auto,
+            fake.runner(),
+            None,
+        );
+        assert_eq!(other.cached_hosts(GITHUB), None);
+        let mut uncached = config();
+        uncached.cache = false;
+        let uncached = Engine::assemble(
+            &uncached,
+            cache_of(&engine),
+            Freshness::Auto,
+            fake.runner(),
+            None,
+        );
+        assert_eq!(uncached.cached_hosts(GITHUB), None);
     }
 
     #[tokio::test(start_paused = true)]

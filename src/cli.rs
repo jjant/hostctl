@@ -14,9 +14,9 @@ use tokio::sync::mpsc;
 
 use crate::actions::{self, Activation, RunsOn};
 use crate::cache::Cache;
-use crate::config::{Config, Host, Overrides, Resolved};
+use crate::config::{Config, FlakeHosts, Host, Overrides, Resolved};
 use crate::engine::{Engine, Freshness};
-use crate::live::{self, Display, Received, Sig, Signals};
+use crate::live::{self, Confirmed, Display, Received, Recheck, Sig, Signals};
 use crate::local::LocalInfo;
 use crate::model::{AppState, DiffOutcome, DiffResult, ErrorInfo, HostId, HostState, Status};
 use crate::nix::FlakeInfo;
@@ -161,6 +161,8 @@ pub enum ConfigCmd {
 /// and config errors, no host selected, nothing to compare against — and
 /// 130 when interrupted).
 pub fn main() -> ExitCode {
+    // What the footer's duration counts from.
+    let started = Instant::now();
     let (cli, given) = match parse(std::env::args_os()) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -170,7 +172,7 @@ pub fn main() -> ExitCode {
     };
     let cwd = std::env::current_dir().ok();
     let command = command_prefix(&cli.global, given, cwd.as_deref());
-    let code = finish(run(cli, &command));
+    let code = finish(run(cli, &command, started));
     // Every way out (a finished check, Ctrl-C, quitting the dashboard)
     // comes here: what was killed on the way gets its SIGKILL before
     // hostctl is gone.
@@ -352,7 +354,7 @@ impl Check {
 
 /// Run the command; `hostctl` is how to run hostctl again in this context
 /// ([`command_prefix`]).
-fn run(cli: Cli, hostctl: &str) -> Result<u8, Exit> {
+fn run(cli: Cli, hostctl: &str, started: Instant) -> Result<u8, Exit> {
     let Cli { global, command } = cli;
     let check = match command {
         // These read neither the configuration (beyond its location) nor
@@ -367,7 +369,7 @@ fn run(cli: Cli, hostctl: &str) -> Result<u8, Exit> {
         Some(Cmd::Config {
             action: ConfigCmd::Show,
         }) => {
-            let setup = Setup::load(&global, hostctl)?;
+            let setup = Setup::load(&global, hostctl, started)?;
             print(&setup.config.to_toml())?;
             return Ok(0);
         }
@@ -385,11 +387,16 @@ fn run(cli: Cli, hostctl: &str) -> Result<u8, Exit> {
         Some(Cmd::Hosts { hosts }) => Check::Hosts { hosts },
         None => Check::default_for(live::drawable(&io::stdout())),
     };
-    checking(&global, hostctl, check)
+    checking(&global, hostctl, started, check)
 }
 
 /// Run `check` in a fresh runtime, with hostctl's signal handling.
-fn checking(global: &GlobalArgs, hostctl: &str, check: Check) -> Result<u8, Exit> {
+fn checking(
+    global: &GlobalArgs,
+    hostctl: &str,
+    started: Instant,
+    check: Check,
+) -> Result<u8, Exit> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -401,7 +408,7 @@ fn checking(global: &GlobalArgs, hostctl: &str, check: Check) -> Result<u8, Exit
         Signals::new().map_err(|e| Exit::Usage(format!("can't handle signals: {e}")))?
     };
     // Blocking work (files, the passwd database) before going async.
-    let setup = Setup::load(global, hostctl)?;
+    let setup = Setup::load(global, hostctl, started)?;
     let cache = open_cache(&setup.config);
     let result = runtime.block_on(async {
         let engine = Engine::new(&setup.config, cache, setup.freshness);
@@ -429,6 +436,8 @@ struct Setup {
     /// The flake is the current directory's `./flake.nix`, because nothing
     /// else set one: messages say so.
     flake_here: bool,
+    /// When hostctl started: a check's duration counts from there.
+    started: Instant,
 }
 
 impl Setup {
@@ -436,7 +445,7 @@ impl Setup {
     /// files, maybe the passwd database). `hostctl` is how to run hostctl
     /// again with the same flags ([`command_prefix`]); a flake found in the
     /// current directory is added to it.
-    fn load(global: &GlobalArgs, hostctl: &str) -> Result<Setup, Exit> {
+    fn load(global: &GlobalArgs, hostctl: &str, started: Instant) -> Result<Setup, Exit> {
         let (mut config, path) =
             Config::load(global.config.as_deref()).map_err(|e| Exit::Usage(format!("{e:#}")))?;
         config
@@ -471,6 +480,7 @@ impl Setup {
             color,
             command,
             flake_here: here,
+            started,
         })
     }
 
@@ -609,40 +619,145 @@ async fn dispatch(
     engine: &Engine,
     signals: &mut Signals,
 ) -> Result<u8, Exit> {
-    let (resolved, known) = find_hosts(setup, engine, signals).await?;
-    let Resolved { hosts, warnings } = resolved;
-    if hosts.is_empty() {
-        return Err(Exit::Usage(no_hosts(
-            &setup.config,
-            setup.path.as_deref(),
-            setup.flake_here_note(),
-        )));
-    }
-    let hosts = select(hosts, check.patterns()).map_err(Exit::Usage)?;
-    if let Check::Hosts { .. } = check {
-        print(&output::hosts_table(&hosts, &warnings, setup.style()))?;
-        return Ok(0);
-    }
-    for warning in &warnings {
-        warn(warning);
-    }
-    let selection = Selection {
-        hosts: hosts.into_iter().enumerate().collect(),
-        known,
+    let selection = match speculate(setup, engine, &check) {
+        Some(selection) => selection,
+        None => {
+            let (resolved, known) = find_hosts(setup, engine, signals).await?;
+            let Resolved { hosts, warnings } = resolved;
+            let hosts = selected(setup, hosts, check.patterns())?;
+            if let Check::Hosts { .. } = check {
+                print(&output::hosts_table(&hosts, &warnings, setup.style()))?;
+                return Ok(0);
+            }
+            for warning in &warnings {
+                warn(warning);
+            }
+            Selection {
+                hosts: hosts.into_iter().enumerate().collect(),
+                known,
+                speculative: false,
+            }
+        }
     };
+    let patterns = check.patterns().to_vec();
     match check {
-        Check::Tui { hosts } => dashboard(setup, engine, selection, &hosts).await,
+        Check::Tui { .. } => dashboard(setup, engine, selection, &patterns).await,
         Check::Status { json, plain, .. } => {
-            status(setup, engine, &selection, json, plain, signals).await
+            status(setup, engine, &selection, &patterns, json, plain, signals).await
         }
         Check::Diff { host, build, json } => {
             diff(setup, engine, &selection, &host, build, json, signals).await
         }
         Check::Activate { yes, force, .. } => {
-            activate(setup, engine, &selection, yes, force, signals).await
+            activate(setup, engine, &selection, &patterns, yes, force, signals).await
         }
         Check::Hosts { .. } => Ok(0),
     }
+}
+
+/// The hosts to check from the cache — those the flake had the last time
+/// discovery read them — so that checking starts at once, while
+/// [`confirm_hosts`] reads them again beside it. `None` (they are read
+/// first) without such a list, for `hosts` (which shows just them), and
+/// when the command's patterns don't pick them as they should.
+fn speculate(setup: &Setup, engine: &Engine, check: &Check) -> Option<Selection> {
+    if let Check::Hosts { .. } = check {
+        return None;
+    }
+    let flake = discovery_flake(&setup.config)?;
+    let cached = engine.cached_hosts(flake)?;
+    let resolved = setup
+        .config
+        .resolve_hosts(Some(&cached), &setup.local)
+        .ok()?;
+    let hosts = selected(setup, resolved.hosts, check.patterns()).ok()?;
+    if let Check::Diff { .. } = check
+        && hosts.len() != 1
+    {
+        return None;
+    }
+    for warning in &resolved.warnings {
+        warn(warning);
+    }
+    Some(Selection {
+        hosts: hosts.into_iter().enumerate().collect(),
+        known: Vec::new(),
+        speculative: true,
+    })
+}
+
+/// Discovery beside a check of hosts from the cache ([`speculate`]): what
+/// the hosts are now, found as [`dispatch`] finds them —
+/// [`live::Confirmed::Same`], or a check to start over with — or why there
+/// are none to check. `diff`: the pattern of a diff, which needs exactly
+/// one host. Warnings go to `deferred`, to be printed once the check is
+/// done rather than into its table.
+async fn confirm_hosts(
+    setup: &Setup,
+    engine: &Engine,
+    patterns: &[String],
+    diff: Option<&str>,
+    speculative: &[(HostId, Host)],
+    deferred: &std::cell::RefCell<Vec<String>>,
+) -> Result<Confirmed, Exit> {
+    let discovered = match discovery_flake(&setup.config) {
+        Some(flake) => Some(engine.discover(flake).await),
+        None => None,
+    };
+    let (resolved, known, warning) = hosts_of(setup, discovered)?;
+    let Resolved { hosts, warnings } = resolved;
+    let hosts = selected(setup, hosts, patterns)?;
+    if hosts.iter().eq(speculative.iter().map(|(_, host)| host)) {
+        return Ok(Confirmed::Same);
+    }
+    let selection = Selection {
+        hosts: hosts.into_iter().enumerate().collect(),
+        known,
+        speculative: false,
+    };
+    if let Some(pattern) = diff {
+        one_host(&selection.hosts, pattern)?;
+    }
+    deferred
+        .borrow_mut()
+        .extend(warning.into_iter().chain(warnings));
+    Ok(Confirmed::Changed(Box::new(Recheck {
+        state: selection.state(setup),
+        hosts: selection.hosts,
+        known: selection.known,
+    })))
+}
+
+/// [`live::check`] of `selection` — with [`confirm_hosts`] beside it when
+/// its hosts came from the cache, and then the warnings found on the way.
+async fn check_selection(
+    setup: &Setup,
+    engine: &Engine,
+    selection: &Selection,
+    patterns: &[String],
+    diff: Option<&str>,
+    display: Display,
+    signals: &mut Signals,
+) -> Result<AppState, Exit> {
+    let trouble = |e: anyhow::Error| Exit::Trouble(format!("{e:#}"));
+    let (hosts, known) = (&selection.hosts, &selection.known);
+    let state = selection.state(setup);
+    if !selection.speculative {
+        let checked = live::check(engine, state, hosts, known, display, signals, setup.started);
+        return checked.await.map_err(trouble);
+    }
+    let deferred = std::cell::RefCell::new(Vec::new());
+    let confirmed = confirm_hosts(setup, engine, patterns, diff, hosts, &deferred);
+    let started = setup.started;
+    let checked = live::check_confirming(
+        engine, state, hosts, known, display, signals, started, confirmed,
+    )
+    .await
+    .map_err(trouble)?;
+    for warning in deferred.into_inner() {
+        warn(&warning);
+    }
+    checked
 }
 
 /// How the dashboard finds its hosts again on a refresh, as at the start
@@ -682,27 +797,52 @@ async fn find_hosts(
     engine: &Engine,
     signals: &mut Signals,
 ) -> Result<(Resolved, Vec<FlakeInfo>), Exit> {
+    let discovered = match discovery_flake(&setup.config) {
+        Some(flake) => {
+            let label = format!("reading the hosts of {flake}");
+            let discovered = live::wait_for(&label, engine.discover(flake), signals).await;
+            Some(discovered.ok_or(Exit::Interrupted)?)
+        }
+        None => None,
+    };
+    let (resolved, known, warning) = hosts_of(setup, discovered)?;
+    if let Some(warning) = warning {
+        warn(&warning);
+    }
+    Ok((resolved, known))
+}
+
+/// The flake whose hosts discovery reads: the default one, when discovery
+/// or the inventory is on.
+fn discovery_flake(config: &Config) -> Option<&str> {
+    let reads = config.discover || !config.inventory.is_empty();
+    config.flake.as_deref().filter(|_| reads)
+}
+
+/// The hosts, given what discovery of the [`discovery_flake`] came to
+/// (`None`: there is none), with the configuration's on top; also the flakes
+/// discovery resolved, and a warning when its hosts couldn't be read but
+/// configured ones can be checked.
+fn hosts_of(
+    setup: &Setup,
+    discovered: Option<Result<(FlakeInfo, FlakeHosts), ErrorInfo>>,
+) -> Result<(Resolved, Vec<FlakeInfo>, Option<String>), Exit> {
     let config = &setup.config;
-    let mut known = Vec::new();
-    let mut flake_hosts = None;
-    if let Some(flake) = config.flake.as_deref()
-        && (config.discover || !config.inventory.is_empty())
-    {
-        let label = format!("reading the hosts of {flake}");
-        let discovered = live::wait_for(&label, engine.discover(flake), signals)
-            .await
-            .ok_or(Exit::Interrupted)?;
+    let (mut known, mut flake_hosts, mut warning) = (Vec::new(), None, None);
+    if let (Some(flake), Some(discovered)) = (discovery_flake(config), discovered) {
         let note = setup.flake_here_note();
         match discovered {
             Ok((info, hosts)) => {
                 known.push(info);
                 flake_hosts = Some(hosts);
             }
-            Err(e) if !config.hosts.is_empty() => warn(&format!(
-                "{}; checking the configured hosts only{}",
-                hosts_error(flake, &e.summary),
-                note.map(|(why, _)| format!(" ({why})")).unwrap_or_default()
-            )),
+            Err(e) if !config.hosts.is_empty() => {
+                warning = Some(format!(
+                    "{}; checking the configured hosts only{}",
+                    hosts_error(flake, &e.summary),
+                    note.map(|(why, _)| format!(" ({why})")).unwrap_or_default()
+                ));
+            }
             Err(e) => {
                 let mut message = hosts_error(flake, &describe(&e));
                 if let Some((why, what)) = note {
@@ -715,7 +855,20 @@ async fn find_hosts(
     let resolved = config
         .resolve_hosts(flake_hosts.as_ref(), &setup.local)
         .map_err(|e| Exit::Usage(format!("{e:#}")))?;
-    Ok((resolved, known))
+    Ok((resolved, known, warning))
+}
+
+/// The hosts `patterns` pick of `hosts` (every pattern has to match one),
+/// or why there are none to check.
+fn selected(setup: &Setup, hosts: Vec<Host>, patterns: &[String]) -> Result<Vec<Host>, Exit> {
+    if hosts.is_empty() {
+        return Err(Exit::Usage(no_hosts(
+            &setup.config,
+            setup.path.as_deref(),
+            setup.flake_here_note(),
+        )));
+    }
+    select(hosts, patterns).map_err(Exit::Usage)
 }
 
 /// `can't read the hosts of <flake>: <why>`, said once: the errors of
@@ -807,6 +960,9 @@ fn select(hosts: Vec<Host>, patterns: &[String]) -> Result<Vec<Host>, String> {
 struct Selection {
     hosts: Vec<(HostId, Host)>,
     known: Vec<FlakeInfo>,
+    /// The hosts are the cache's ([`speculate`]): to be confirmed beside
+    /// the check.
+    speculative: bool,
 }
 
 impl Selection {
@@ -838,6 +994,7 @@ async fn dashboard(
         selection.known,
         options,
         rediscovery(setup, patterns),
+        selection.speculative,
     )
     .await
     .map_err(|e| Exit::Trouble(format!("{e:#}")))
@@ -847,6 +1004,7 @@ async fn status(
     setup: &Setup,
     engine: &Engine,
     selection: &Selection,
+    patterns: &[String],
     json: bool,
     plain: bool,
     signals: &mut Signals,
@@ -858,16 +1016,8 @@ async fn status(
     } else {
         Display::Progress
     };
-    let state = live::check(
-        engine,
-        selection.state(setup),
-        &selection.hosts,
-        &selection.known,
-        display,
-        signals,
-    )
-    .await
-    .map_err(|e| Exit::Trouble(format!("{e:#}")))?;
+    let checked = check_selection(setup, engine, selection, patterns, None, display, signals);
+    let state = checked.await?;
     if json {
         print_json(&output::status_report(&state))?;
     } else if !redraw {
@@ -885,28 +1035,18 @@ async fn diff(
     json: bool,
     signals: &mut Signals,
 ) -> Result<u8, Exit> {
-    let [(id, _)] = selection.hosts.as_slice() else {
-        let names: Vec<_> = selection
-            .hosts
-            .iter()
-            .map(|(_, h)| util::one_line(&h.name))
-            .collect();
-        return Err(Exit::Usage(format!(
-            "diff needs exactly one host, but {pattern:?} matches {}",
-            names.join(", ")
-        )));
-    };
-    let id = *id;
-    let mut state = live::check(
+    let id = one_host(&selection.hosts, pattern)?;
+    let patterns = [pattern.to_string()];
+    let checked = check_selection(
+        setup,
         engine,
-        selection.state(setup),
-        &selection.hosts,
-        &selection.known,
+        selection,
+        &patterns,
+        Some(pattern),
         Display::Progress,
         signals,
-    )
-    .await
-    .map_err(|e| Exit::Trouble(format!("{e:#}")))?;
+    );
+    let mut state = checked.await?;
     if state.interrupted {
         return Err(Exit::Interrupted);
     }
@@ -961,6 +1101,19 @@ fn desired_missing(host: &Host, hostctl: &str) -> String {
         remote::sh_quote(&name),
         build_place(host)
     )
+}
+
+/// The host of a diff's selection, which needs exactly one, or which hosts
+/// its `pattern` picks instead.
+fn one_host(hosts: &[(HostId, Host)], pattern: &str) -> Result<HostId, Exit> {
+    if let [(id, _)] = hosts {
+        return Ok(*id);
+    }
+    let names: Vec<_> = hosts.iter().map(|(_, h)| util::one_line(&h.name)).collect();
+    Err(Exit::Usage(format!(
+        "diff needs exactly one host, but {pattern:?} matches {}",
+        names.join(", ")
+    )))
 }
 
 /// The current and desired generations of a checked host, or why they
@@ -1149,6 +1302,7 @@ async fn activate(
     setup: &Setup,
     engine: &Engine,
     selection: &Selection,
+    patterns: &[String],
     yes: bool,
     force: bool,
     signals: &mut Signals,
@@ -1160,16 +1314,8 @@ async fn activate(
     } else {
         Display::Progress
     };
-    let mut state = live::check(
-        engine,
-        selection.state(setup),
-        &selection.hosts,
-        &selection.known,
-        display,
-        signals,
-    )
-    .await
-    .map_err(|e| Exit::Trouble(format!("{e:#}")))?;
+    let checked = check_selection(setup, engine, selection, patterns, None, display, signals);
+    let mut state = checked.await?;
     if !redraw {
         print(&output::status_table(&state, style, None, util::now_unix()))?;
     }
@@ -1935,6 +2081,7 @@ mod tests {
             color: false,
             command: "hostctl -f /home/u/src/proj".into(),
             flake_here: true,
+            started: Instant::now(),
         };
         let note = setup.flake_here_note().unwrap();
         assert_eq!(
@@ -2111,6 +2258,7 @@ mod tests {
         let selection = Selection {
             hosts: vec![(0, host("a")), (1, local("b", false))],
             known: vec![info()],
+            speculative: false,
         };
         let setup = Setup {
             config: Config::default(),
@@ -2125,6 +2273,7 @@ mod tests {
             color: false,
             command: "hostctl -c /etc/hostctl/config.toml".into(),
             flake_here: false,
+            started: Instant::now(),
         };
         let state = selection.state(&setup);
         assert_eq!(state.hosts.len(), 2);

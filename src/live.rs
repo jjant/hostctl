@@ -54,6 +54,7 @@ pub async fn status(
         known,
         Display::Table(style),
         &mut signals,
+        Instant::now(),
     )
     .await
 }
@@ -71,33 +72,137 @@ pub(crate) enum Display {
 
 /// Run a check of `hosts` shown with `display` until it completes or one
 /// of `signals` arrives; then [`Event::Interrupted`] is applied, the cache
-/// flushed and the partial state returned (its exit code is 130).
+/// flushed and the partial state returned (its exit code is 130). The run's
+/// duration counts from `started` (when hostctl started, say).
 pub(crate) async fn check(
+    engine: &Engine,
+    state: AppState,
+    hosts: &[(HostId, Host)],
+    known: &[FlakeInfo],
+    display: Display,
+    signals: &mut Signals,
+    started: Instant,
+) -> anyhow::Result<AppState> {
+    let same = std::future::ready(Ok::<_, std::convert::Infallible>(Confirmed::Same));
+    let checked = check_confirming(engine, state, hosts, known, display, signals, started, same);
+    match checked.await? {
+        Ok(state) => Ok(state),
+        Err(never) => match never {},
+    }
+}
+
+/// What finding the hosts again ([`check_confirming`]) says of those that
+/// a check started with.
+pub(crate) enum Confirmed {
+    /// They are the hosts.
+    Same,
+    /// These are, and the check starts over with them.
+    Changed(Box<Recheck>),
+}
+
+/// A check to start over with ([`Confirmed::Changed`]).
+pub(crate) struct Recheck {
+    pub(crate) state: AppState,
+    pub(crate) hosts: Vec<(HostId, Host)>,
+    pub(crate) known: Vec<FlakeInfo>,
+}
+
+/// [`check`] of `hosts` that may not be the hosts any more (the cache's,
+/// as of the last time the flake's were read), while `confirmed` finds out:
+/// the same ones, and the check goes on; others, and it starts over with
+/// those, its table redrawn in place; or an error, and the table goes
+/// (`Ok(Err(…))`). The outcome waits for `confirmed`, also when the check
+/// is done first.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn check_confirming<E>(
     engine: &Engine,
     mut state: AppState,
     hosts: &[(HostId, Host)],
     known: &[FlakeInfo],
     display: Display,
     signals: &mut Signals,
-) -> anyhow::Result<AppState> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let ended = {
-        let mut term = Stdio::detect();
-        let table = matches!(display, Display::Table(_)) && term.out_size().is_some();
-        let progress = !table && term.err_size().is_some();
-        if table || progress {
-            term.quiet(!table);
-        }
-        let check = engine.check(hosts, known, &tx);
-        drive(&mut term, display, check, &mut rx, signals, &mut state).await
-    };
-    if ended.as_ref().is_ok_and(|e| *e == Ended::Finished) {
-        // The engine saved it when the check completed.
-        return Ok(state);
+    started: Instant,
+    confirmed: impl Future<Output = Result<Confirmed, E>>,
+) -> anyhow::Result<Result<AppState, E>> {
+    let (mut hosts, mut known) = (hosts.to_vec(), known.to_vec());
+    let mut confirmed = Some(Box::pin(confirmed));
+    let mut term = Stdio::detect();
+    let table = matches!(display, Display::Table(_)) && term.out_size().is_some();
+    let progress = !table && term.err_size().is_some();
+    if table || progress {
+        term.quiet(!table);
     }
-    save_cache(engine).await;
-    ended?;
-    Ok(state)
+    let mut screen = Screen::new(display, started);
+    // The engine saves the cache when a check completes.
+    let mut completed = false;
+    let outcome: io::Result<Result<(), E>> = loop {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let work = checked(engine.check(&hosts, &known, &tx), confirmed.take());
+        let ended = drive(&mut term, &mut screen, work, &mut rx, signals, &mut state).await;
+        match ended {
+            Ok(Some(Checked::Changed(recheck))) => {
+                Recheck {
+                    state,
+                    hosts,
+                    known,
+                } = *recheck;
+            }
+            Ok(Some(Checked::Done)) => {
+                completed = true;
+                break screen.finish(&mut term, &state).map(Ok);
+            }
+            Ok(Some(Checked::Failed(e))) => break screen.abandon(&mut term).map(|()| Err(e)),
+            Ok(None) => {
+                // The terminal may be gone (SIGHUP): the state is what matters.
+                let _ = screen.finish(&mut term, &state);
+                break Ok(Ok(()));
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    drop(term);
+    if !completed {
+        save_cache(engine).await;
+    }
+    Ok(outcome?.map(|()| state))
+}
+
+/// What a check came to ([`checked`]).
+enum Checked<E> {
+    /// It is done, and its hosts were the hosts.
+    Done,
+    Changed(Box<Recheck>),
+    Failed(E),
+}
+
+/// `check`, and what `confirmed` says of its hosts if that is still to
+/// come: done once both are, unless `confirmed` says other hosts (at once,
+/// and then the check is dropped) or fails.
+async fn checked<E>(
+    check: impl Future<Output = ()>,
+    confirmed: Option<std::pin::Pin<Box<impl Future<Output = Result<Confirmed, E>>>>>,
+) -> Checked<E> {
+    let mut check = std::pin::pin!(check);
+    let Some(mut confirmed) = confirmed else {
+        check.await;
+        return Checked::Done;
+    };
+    let mut done = false;
+    loop {
+        tokio::select! {
+            () = &mut check, if !done => done = true,
+            confirmed = &mut confirmed => return match confirmed {
+                Ok(Confirmed::Same) => {
+                    if !done {
+                        check.await;
+                    }
+                    Checked::Done
+                }
+                Ok(Confirmed::Changed(recheck)) => Checked::Changed(recheck),
+                Err(e) => Checked::Failed(e),
+            },
+        }
+    }
 }
 
 /// [`Engine::save_cache`] off the async thread (it takes a file lock).
@@ -298,13 +403,6 @@ fn write_out(text: &str) -> io::Result<()> {
     out.flush()
 }
 
-/// How [`drive`] ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ended {
-    Finished,
-    Interrupted,
-}
-
 /// What [`drive`] draws on: the process' stdout and stderr, or a fake.
 trait Term {
     /// stdout's terminal size (columns, rows); `None` unless it is a
@@ -400,27 +498,26 @@ impl Term for Stdio {
     }
 }
 
-/// Run `check` (whose events arrive on `rx`) to completion or until one of
-/// `signals`, keeping `term` up to date with `state` per `display`. On an
-/// interrupt, events already sent are applied before
-/// [`Event::Interrupted`]. Ends with the final table ([`Display::Table`])
-/// or with the progress line cleared. Ctrl-Z ([`Received::Suspend`]) takes the
-/// progress line off, gives the terminal back and stops; once continued,
-/// the next frame is drawn afresh where the cursor is (the shell wrote
-/// below the last one).
-async fn drive<T: Term>(
+/// Run `work` (a check, whose events arrive on `rx`) to completion — `Some`
+/// of what it came to — or until one of `signals` — `None`, once the
+/// events already sent and [`Event::Interrupted`] are applied — keeping
+/// `term` up to date with `state` on `screen` (whose
+/// [`Screen::finish`] is the caller's). A check's start counts from
+/// `screen`'s. Ctrl-Z ([`Received::Suspend`]) takes the progress line off,
+/// gives the terminal back and stops; once continued, the next frame is
+/// drawn afresh where the cursor is (the shell wrote below the last one).
+async fn drive<T: Term, W: Future>(
     term: &mut T,
-    display: Display,
-    check: impl Future<Output = ()>,
+    screen: &mut Screen,
+    work: W,
     rx: &mut UnboundedReceiver<Event>,
     signals: &mut impl SignalSource,
     state: &mut AppState,
-) -> io::Result<Ended> {
-    let mut check = std::pin::pin!(check);
-    let mut screen = Screen::new(display);
+) -> io::Result<Option<W::Output>> {
+    let mut work = std::pin::pin!(work);
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut finished = false;
+    let mut outcome = None;
     let ended = loop {
         tokio::select! {
             biased;
@@ -429,39 +526,46 @@ async fn drive<T: Term>(
                     screen.suspend(term);
                     term.suspend();
                 }
-                _ => break Ended::Interrupted,
+                _ => break None,
             },
-            () = &mut check, if !finished => finished = true,
-            Some(event) = rx.recv() => state.apply(event, Instant::now()),
+            done = &mut work, if outcome.is_none() => outcome = Some(done),
+            Some(event) = rx.recv() => apply(state, event, screen.start),
             _ = ticker.tick() => screen.frame += 1,
         }
         // One redraw per burst of events.
-        drain(rx, state);
-        if finished {
-            break Ended::Finished;
+        drain(rx, state, screen.start);
+        if let Some(done) = outcome.take() {
+            break Some(done);
         }
         screen.update(term, state)?;
     };
-    drain(rx, state);
-    if ended == Ended::Interrupted {
+    drain(rx, state, screen.start);
+    if ended.is_none() {
         state.apply(Event::Interrupted, Instant::now());
-        // The terminal may be gone (SIGHUP): the state is what matters.
-        let _ = screen.finish(term, state);
-    } else {
-        screen.finish(term, state)?;
     }
     Ok(ended)
 }
 
-fn drain(rx: &mut UnboundedReceiver<Event>, state: &mut AppState) {
+/// Apply `event` to `state` now; a check's start counts from `started`
+/// (when hostctl did), so that its duration covers what came before it.
+fn apply(state: &mut AppState, event: Event, started: Instant) {
+    let now = Instant::now();
+    match event {
+        Event::RunStarted => state.apply(Event::RunStarted, started.min(now)),
+        event => state.apply(event, now),
+    }
+}
+
+fn drain(rx: &mut UnboundedReceiver<Event>, state: &mut AppState, started: Instant) {
     while let Ok(event) = rx.try_recv() {
-        state.apply(event, Instant::now());
+        apply(state, event, started);
     }
 }
 
 /// What is on the terminal.
 struct Screen {
     display: Display,
+    /// When it all started (the progress line's clock, and the check's).
     start: Instant,
     /// Spinner frame.
     frame: usize,
@@ -473,14 +577,24 @@ struct Screen {
 }
 
 impl Screen {
-    fn new(display: Display) -> Screen {
+    fn new(display: Display, start: Instant) -> Screen {
         Screen {
             display,
-            start: Instant::now(),
+            start,
             frame: 0,
             drawn: None,
             progress: None,
         }
+    }
+
+    /// Take everything off the screen: a check that won't finish.
+    fn abandon(&mut self, term: &mut impl Term) -> io::Result<()> {
+        self.clear_progress(term);
+        if let Some((cols, _)) = term.out_size() {
+            self.erase(term, cols)?;
+        }
+        self.drawn = None;
+        Ok(())
     }
 
     fn update(&mut self, term: &mut impl Term, state: &AppState) -> io::Result<()> {
@@ -1174,7 +1288,7 @@ mod tests {
     ) -> Ended {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut signals = Script::new(signals);
-        drive(
+        drive_to_end(
             term,
             display,
             play(tx, events),
@@ -1183,7 +1297,34 @@ mod tests {
             state,
         )
         .await
-        .unwrap()
+    }
+
+    /// How [`drive_to_end`] ended.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Ended {
+        Finished,
+        Interrupted,
+    }
+
+    /// [`drive`] `check`, then the final screen, as [`check_confirming`]
+    /// does.
+    async fn drive_to_end(
+        term: &mut Fake,
+        display: Display,
+        check: impl Future<Output = ()>,
+        rx: &mut UnboundedReceiver<Event>,
+        signals: &mut Script,
+        state: &mut AppState,
+    ) -> Ended {
+        let mut screen = Screen::new(display, Instant::now());
+        let ended = drive(term, &mut screen, check, rx, signals, state)
+            .await
+            .unwrap();
+        screen.finish(term, state).unwrap();
+        match ended {
+            Some(()) => Ended::Finished,
+            None => Ended::Interrupted,
+        }
     }
 
     const PLAIN: Style = Style { color: false };
@@ -1311,6 +1452,83 @@ mod tests {
             progress_line(&s, 12, Duration::from_secs(65)),
             "⠹ 2/4 · 2 evaluating · 1m05s"
         );
+    }
+
+    /// A check that takes `ms` and says when it is done (or dropped).
+    fn timed_check(ms: u64, done: &Rc<Cell<Option<bool>>>) -> impl Future<Output = ()> {
+        struct Dropped(Rc<Cell<Option<bool>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                if self.0.get().is_none() {
+                    self.0.set(Some(false));
+                }
+            }
+        }
+        let flag = Dropped(Rc::clone(done));
+        async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            flag.0.set(Some(true));
+        }
+    }
+
+    async fn confirmed_after(
+        ms: u64,
+        confirmed: Result<Confirmed, &str>,
+    ) -> Result<Confirmed, &str> {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        confirmed
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_of_speculative_hosts_waits_for_their_confirmation() {
+        // Confirmed first: the check goes on to the end.
+        let done = Rc::new(Cell::new(None));
+        let start = tokio::time::Instant::now();
+        let confirmed = Box::pin(confirmed_after(100, Ok(Confirmed::Same)));
+        let outcome = checked(timed_check(500, &done), Some(confirmed)).await;
+        assert!(matches!(outcome, Checked::Done));
+        assert_eq!(
+            (done.get(), start.elapsed()),
+            (Some(true), Duration::from_millis(500))
+        );
+        // Done first: it waits for the confirmation.
+        let done = Rc::new(Cell::new(None));
+        let start = tokio::time::Instant::now();
+        let confirmed = Box::pin(confirmed_after(800, Ok(Confirmed::Same)));
+        let outcome = checked(timed_check(500, &done), Some(confirmed)).await;
+        assert!(matches!(outcome, Checked::Done));
+        assert_eq!(start.elapsed(), Duration::from_millis(800));
+        // Other hosts: the check stops at once.
+        let done = Rc::new(Cell::new(None));
+        let recheck = Recheck {
+            state: state(&["web3"]),
+            hosts: vec![(0, host("web3", false))],
+            known: Vec::new(),
+        };
+        let confirmed = Box::pin(confirmed_after(
+            100,
+            Ok(Confirmed::Changed(Box::new(recheck))),
+        ));
+        let outcome = checked(timed_check(500, &done), Some(confirmed)).await;
+        let Checked::Changed(recheck) = outcome else {
+            panic!("expected a new check")
+        };
+        assert_eq!(recheck.hosts[0].1.name, "web3");
+        assert_eq!(done.get(), Some(false), "dropped");
+        // Or an error.
+        let done = Rc::new(Cell::new(None));
+        let confirmed = Box::pin(confirmed_after(100, Err("no hosts")));
+        let outcome = checked(timed_check(500, &done), Some(confirmed)).await;
+        assert!(matches!(outcome, Checked::Failed("no hosts")));
+        // Nothing to confirm: just the check.
+        let done = Rc::new(Cell::new(None));
+        let mut confirmed = Some(Box::pin(confirmed_after(0, Ok(Confirmed::Same))));
+        confirmed.take();
+        assert!(matches!(
+            checked(timed_check(5, &done), confirmed).await,
+            Checked::Done
+        ));
+        assert_eq!(done.get(), Some(true));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1608,7 +1826,7 @@ mod tests {
             size.set((80, 5));
             play(tx, events).await;
         };
-        drive(
+        drive_to_end(
             &mut term,
             Display::Table(PLAIN),
             check,
@@ -1616,8 +1834,7 @@ mod tests {
             &mut Script::new(&[]),
             &mut s,
         )
-        .await
-        .unwrap();
+        .await;
         let table = output::status_table(&s, PLAIN, None, util::now_unix());
         assert!(term.out.ends_with(&table));
         let mut vt = Vt::new(80, 24);
@@ -1631,7 +1848,7 @@ mod tests {
     fn narrowing_counts_the_reflowed_rows() {
         let mut s = state(&["bigmem", "web1"]);
         s.hosts[1].host.note = Some("a note long enough to wrap at thirty columns".into());
-        let mut screen = Screen::new(Display::Table(PLAIN));
+        let mut screen = Screen::new(Display::Table(PLAIN), Instant::now());
         let mut term = Fake::new(100, 30);
         screen.update(&mut term, &s).unwrap();
         let wide = term
@@ -1702,7 +1919,7 @@ mod tests {
             deployed: None,
         });
         // The interrupt is ready at once, before any event is read.
-        let ended = drive(
+        let ended = drive_to_end(
             &mut term,
             Display::Progress,
             std::future::pending(),
@@ -1710,8 +1927,7 @@ mod tests {
             &mut Script::new(&[(0, Received::Sig(Sig::Interrupt))]),
             &mut s,
         )
-        .await
-        .unwrap();
+        .await;
         assert_eq!(ended, Ended::Interrupted);
         assert!(s.hosts[0].report().is_some());
         assert!(term.out.is_empty());

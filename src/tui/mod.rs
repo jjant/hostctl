@@ -94,10 +94,12 @@ pub type Rediscover = Box<dyn Fn(Engine) -> LocalBoxFuture<'static, Result<Found
 /// check, `rediscover` finds the hosts again; when they changed (the flake
 /// gained, lost or redefined some), that check makes way for one of the
 /// new list, which keeps what is known about the hosts that stayed the
-/// same and the selection by name. A check that `Run` interrupted starts
-/// over once the command is done (which re-probes the host too). A signal
-/// (SIGINT, SIGQUIT, SIGTERM, SIGHUP) ends the dashboard as interrupted
-/// (exit 130).
+/// same and the selection by name. With `speculative` hosts (the cache's,
+/// as of the last time the flake's were read), the first check gets the
+/// same. A check that `Run` interrupted starts over once the command is
+/// done (which re-probes the host too). A signal (SIGINT, SIGQUIT,
+/// SIGTERM, SIGHUP) ends the dashboard as interrupted (exit 130).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     engine: Engine,
     state: AppState,
@@ -105,6 +107,7 @@ pub async fn run(
     known: Vec<FlakeInfo>,
     options: Options,
     rediscover: Option<Rediscover>,
+    speculative: bool,
 ) -> anyhow::Result<u8> {
     let hosts = Rc::new(hosts);
     let (tx, rx) = mpsc::unbounded_channel();
@@ -113,6 +116,21 @@ pub async fn run(
     let check = futures_util::poll!(first.as_mut())
         .is_pending()
         .then_some(first);
+    // And beside it, the hosts it checks read again.
+    let mut discovery = rediscover
+        .as_ref()
+        .filter(|_| speculative)
+        .map(|rediscover| rediscover(engine.clone()));
+    let found = match &mut discovery {
+        Some(discovery) => match futures_util::poll!(discovery.as_mut()) {
+            Poll::Ready(found) => Some(found),
+            Poll::Pending => None,
+        },
+        None => None,
+    };
+    if found.is_some() {
+        discovery = None;
+    }
     let mut ui = Ui {
         app: App::new(state, options.color),
         engine,
@@ -121,7 +139,7 @@ pub async fn run(
         rx,
         check,
         rediscover,
-        discovery: None,
+        discovery,
         jobs: FuturesUnordered::new(),
         events: None,
         refresh_interval: options.refresh_interval,
@@ -130,6 +148,9 @@ pub async fn run(
     };
     if ui.check.is_none() {
         ui.check_ended();
+    }
+    if let Some(found) = found {
+        ui.rediscovered(found).await;
     }
     let mut signals = Signals::new()?;
     let result = ui.run(&mut signals).await;
