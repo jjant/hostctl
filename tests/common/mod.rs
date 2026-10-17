@@ -779,8 +779,10 @@ impl World {
 
     /// hostctl with `args`, in this world's environment (see [`command`]):
     /// `PATH` starts with the fakes; `HOME`, `TMPDIR` and the XDG
-    /// directories are the world's (`XDG_STATE_HOME` unset); `NO_COLOR`
-    /// and `USER=tester` are set.
+    /// directories are the world's (`XDG_STATE_HOME` unset); `NO_COLOR`,
+    /// `USER=tester` and `HOSTCTL_TEST_OS=linux` are set (on a Mac, self
+    /// detection would take a darwin host behind localhost for this
+    /// machine).
     pub fn command(&self, args: &[&str]) -> Command {
         let root = self.root();
         let mut cmd = command(env!("CARGO_BIN_EXE_hostctl"));
@@ -797,7 +799,8 @@ impl World {
             .env("XDG_RUNTIME_DIR", root.join("r"))
             .env("HOSTCTL_FAKE", &self.fake)
             .env("NO_COLOR", "1")
-            .env("USER", "tester");
+            .env("USER", "tester")
+            .env("HOSTCTL_TEST_OS", "linux");
         if let Some(name) = self.local.borrow().as_deref() {
             let host = self.host(name);
             cmd.env("HOSTCTL_PROBE_ROOT", host.root())

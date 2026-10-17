@@ -1465,6 +1465,32 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
 }
 
 #[test]
+fn on_a_mac_the_darwin_host_behind_a_tunnel_is_assumed_to_be_this_machine() {
+    let w = World::new();
+    w.env("HOSTCTL_TEST_OS", Some("darwin"));
+    w.flake(REV1);
+    w.config(
+        "[hosts.mac]\nkind = \"darwin\"\ndestination = \"ssh://jj@localhost:2022\"\nprobe = \"current-system\"\n",
+    );
+    let mac = store('m', "darwin-system-26.05");
+    w.eval("darwinConfigurations.mac.system", &mac);
+    w.this_machine("mac").system(&mac, 7, &mac);
+    let run = w.run(&["status", "--plain"]);
+    run.code(0);
+    assert_eq!(
+        table(&run),
+        "github:o/r @ 1111111 (2h ago)\n\
+         \n  mac •?  ✓ up to date  gen 7 · 3d ago\n\
+         \n1 up to date · •? this machine (assumed) · <took>\n"
+    );
+    assert!(
+        w.calls().iter().all(|c| c.tool == "nix"),
+        "no ssh: {}",
+        w.log()
+    );
+}
+
+#[test]
 fn an_unreachable_optional_host_is_offline_and_exits_0() {
     let w = World::new();
     w.flake(REV1);

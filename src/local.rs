@@ -24,6 +24,15 @@ impl Os {
             Os::Other
         }
     }
+
+    fn parse(name: &str) -> Option<Os> {
+        match name {
+            "linux" => Some(Os::Linux),
+            "darwin" => Some(Os::Darwin),
+            "other" => Some(Os::Other),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,13 +48,17 @@ pub struct LocalInfo {
 
 impl LocalInfo {
     /// The running machine: hostname from `gethostname(2)` (falling back to
-    /// `$HOSTNAME`, then `localhost`), user, [`Os::current`]. An empty
-    /// `forced` name counts as none. Runs no processes.
+    /// `$HOSTNAME`, then `localhost`), user, [`Os::current`] (unless
+    /// `$HOSTCTL_TEST_OS` is `linux`, `darwin` or `other`: the integration
+    /// tests run as if on Linux everywhere). An empty `forced` name counts
+    /// as none. Runs no processes.
     pub fn detect(forced: Option<String>) -> LocalInfo {
         LocalInfo {
             hostname: pick_hostname(os_hostname(), || env_value("HOSTNAME")),
             user: pick_user(env_value("USER"), passwd_user),
-            os: Os::current(),
+            os: env_value("HOSTCTL_TEST_OS")
+                .and_then(|os| Os::parse(&os))
+                .unwrap_or_else(Os::current),
             forced: forced.filter(|name| !name.is_empty()),
         }
     }

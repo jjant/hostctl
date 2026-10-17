@@ -536,7 +536,8 @@ are private temp files.
 - `tests/`: the real binary (`CARGO_BIN_EXE_hostctl`) against fake `nix`/`ssh`
   (`#!/bin/sh`; the fake ssh runs `sh -s` locally against per-destination
   `HOSTCTL_PROBE_ROOT` trees) — CLI wiring, exit codes, JSON, diff, activation;
-  parallelism via overlap logs, never wall time.
+  parallelism via overlap logs, never wall time. They run as if on Linux
+  (`HOSTCTL_TEST_OS=linux`) wherever they run; one of them is on a Mac.
 - Real Nix (`HOSTCTL_TEST_NIX=1`, on in Nix checks via a daemon-less
   `--store local?root=$TMPDIR/store`): a `builtins.derivation`-only flake and a
   `custom` local host — up to date ⇒ 0, repointed profile ⇒ 1, second run spawns
