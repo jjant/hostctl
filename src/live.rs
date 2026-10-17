@@ -109,11 +109,12 @@ pub(crate) async fn save_cache(engine: &Engine) {
     let _ = tokio::task::spawn_blocking(move || engine.save_cache()).await;
 }
 
-/// SIGINT, SIGTERM and SIGHUP as one stream. Creating it installs
+/// SIGINT, SIGQUIT, SIGTERM and SIGHUP as one stream. Creating it installs
 /// hostctl's handlers (for the rest of the process' life), so the first
 /// one must exist before any [`crate::exec::run_interactive`].
 pub(crate) struct Signals {
     interrupt: Signal,
+    quit: Signal,
     terminate: Signal,
     hangup: Signal,
 }
@@ -123,15 +124,20 @@ impl Signals {
     pub(crate) fn new() -> io::Result<Signals> {
         Ok(Signals {
             interrupt: signal(SignalKind::interrupt())?,
+            quit: signal(SignalKind::quit())?,
             terminate: signal(SignalKind::terminate())?,
             hangup: signal(SignalKind::hangup())?,
         })
     }
 
     /// The next of them (pending forever once the runtime shuts down).
+    /// SIGQUIT (Ctrl-\) is an interrupt like SIGINT: its default action
+    /// would dump core, with the terminal as hostctl left it and the
+    /// children still running.
     pub(crate) async fn recv(&mut self) -> Sig {
         tokio::select! {
             Some(()) = self.interrupt.recv() => Sig::Interrupt,
+            Some(()) = self.quit.recv() => Sig::Interrupt,
             Some(()) = self.terminate.recv() => Sig::Terminate,
             Some(()) = self.hangup.recv() => Sig::Hangup,
             else => std::future::pending().await,
@@ -142,7 +148,7 @@ impl Signals {
 /// Which of [`Signals`] arrived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Sig {
-    /// SIGINT (Ctrl-C).
+    /// SIGINT (Ctrl-C) or SIGQUIT (Ctrl-\).
     Interrupt,
     /// SIGTERM.
     Terminate,

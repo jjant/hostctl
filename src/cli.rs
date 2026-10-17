@@ -261,7 +261,7 @@ enum Exit {
     Usage(String),
     /// Something failed once checking had started.
     Trouble(String),
-    /// A signal (SIGINT, SIGTERM, SIGHUP).
+    /// A signal (SIGINT, SIGQUIT, SIGTERM, SIGHUP).
     Interrupted,
 }
 

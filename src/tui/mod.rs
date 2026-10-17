@@ -75,8 +75,8 @@ const FRAME: Duration = Duration::from_millis(16);
 /// [`Freshness::Auto`] (which honors `nix.refresh`); both with
 /// [`Freshness::Offline`] under `options.offline`. A check that `Run`
 /// interrupted starts over once the command is done (which re-probes the
-/// host too). A signal (SIGINT, SIGTERM, SIGHUP) ends the dashboard as
-/// interrupted (exit 130).
+/// host too). A signal (SIGINT, SIGQUIT, SIGTERM, SIGHUP) ends the
+/// dashboard as interrupted (exit 130).
 pub async fn run(
     engine: Engine,
     state: AppState,

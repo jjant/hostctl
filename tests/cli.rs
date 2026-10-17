@@ -685,6 +685,34 @@ fn an_interrupted_check_leaves_no_process_behind() {
     assert!(!survived, "the evaluation outlived hostctl:\n{}", w.log());
 }
 
+#[test]
+fn quitting_with_ctrl_backslash_is_an_interruption_too() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    w.eval(&hm_attr("web1"), &hm('a')).delay(30.0);
+
+    let child = w.command(&["status", "--plain"]).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !w.log().contains(" eval --raw ") {
+        assert!(
+            Instant::now() < deadline,
+            "no evaluation started: {}",
+            w.log()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // SAFETY: a plain syscall; the child leads its own process group.
+    unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGQUIT) };
+    let run = finish(child);
+    // Not a core dump: the partial table, exit 130, the evaluation killed.
+    run.code(130);
+    assert!(run.stdout.contains("  web1  … interrupted\n"), "{run}");
+    let eval = &w.evals()[0];
+    assert_eq!(eval.end, None, "the evaluation was killed: {}", w.log());
+}
+
 // ─── JSON ───────────────────────────────────────────────────────────────
 
 /// The keys every host of `status --json` has, null or not (sorted).
