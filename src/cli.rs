@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitCode, ExitStatus};
 use std::time::Instant;
 
-use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -21,7 +21,7 @@ use crate::local::LocalInfo;
 use crate::model::{AppState, DiffOutcome, DiffResult, ErrorInfo, HostId, HostState, Status};
 use crate::nix::FlakeInfo;
 use crate::output::{self, Style};
-use crate::remote::CommandSpec;
+use crate::remote::{self, CommandSpec};
 use crate::storepath::StorePath;
 use crate::util;
 
@@ -161,19 +161,90 @@ pub enum ConfigCmd {
 /// and config errors, no host selected, nothing to compare against — and
 /// 130 when interrupted).
 pub fn main() -> ExitCode {
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let (cli, given) = match parse(std::env::args_os()) {
+        Ok(parsed) => parsed,
         Err(e) => {
             let _ = e.print();
             return ExitCode::from(clap_exit_code(&e));
         }
     };
-    let code = finish(run(cli));
+    let cwd = std::env::current_dir().ok();
+    let command = command_prefix(&cli.global, given, cwd.as_deref());
+    let code = finish(run(cli, &command));
     // Every way out (a finished check, Ctrl-C, quitting the dashboard)
     // comes here: what was killed on the way gets its SIGKILL before
     // hostctl is gone.
     crate::exec::finish_kills();
     ExitCode::from(code)
+}
+
+/// The arguments, and which global flags were given on the command line
+/// itself (rather than by their environment variables).
+fn parse(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(Cli, OnCommandLine), clap::Error> {
+    let matches = Cli::command().try_get_matches_from(args)?;
+    let cli = Cli::from_arg_matches(&matches)?;
+    let given = |id| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
+    let on_command_line = OnCommandLine {
+        config: given("config"),
+        flake: given("flake"),
+        self_host: given("self_host"),
+    };
+    Ok((cli, on_command_line))
+}
+
+/// Which of the global flags that choose what hostctl looks at were given
+/// on the command line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OnCommandLine {
+    config: bool,
+    flake: bool,
+    self_host: bool,
+}
+
+/// How to run hostctl again in this context, for the commands it suggests
+/// and copies: `hostctl`, then `-c`, `-f` and `--self` as given on the
+/// command line, shell-quoted, with a relative config file or flake path
+/// made absolute (in `cwd`) so that the command works from anywhere. What
+/// the environment or the config file say applies again by itself.
+fn command_prefix(global: &GlobalArgs, given: OnCommandLine, cwd: Option<&Path>) -> String {
+    let mut command = String::from("hostctl");
+    let mut flag = |flag: &str, value: &str| {
+        command.push_str(&format!(" {flag} {}", remote::sh_quote(value)));
+    };
+    // `.` components go (`Path::components` drops them), `..` stay.
+    let absolute = |path: &Path| match cwd {
+        Some(cwd) if path.is_relative() => cwd.join(path).components().collect(),
+        _ => path.to_path_buf(),
+    };
+    if let Some(config) = global.config.as_deref().filter(|_| given.config)
+        && !config.as_os_str().is_empty()
+    {
+        flag("-c", &absolute(config).to_string_lossy());
+    }
+    if let Some(flake) = global
+        .flake
+        .as_deref()
+        .filter(|f| given.flake && !f.is_empty())
+    {
+        // A path flake; anything else (`github:…`, `nixpkgs`) means the same anywhere.
+        let relative =
+            flake == "." || flake == ".." || flake.starts_with("./") || flake.starts_with("../");
+        if relative {
+            flag("-f", &absolute(Path::new(flake)).to_string_lossy());
+        } else {
+            flag("-f", flake);
+        }
+    }
+    if let Some(name) = global
+        .self_host
+        .as_deref()
+        .filter(|s| given.self_host && !s.is_empty())
+    {
+        flag("--self", name);
+    }
+    command
 }
 
 /// `--help` and `--version` succeed; whatever else clap rejects is a usage
@@ -279,7 +350,9 @@ impl Check {
     }
 }
 
-fn run(cli: Cli) -> Result<u8, Exit> {
+/// Run the command; `hostctl` is how to run hostctl again in this context
+/// ([`command_prefix`]).
+fn run(cli: Cli, hostctl: &str) -> Result<u8, Exit> {
     let Cli { global, command } = cli;
     let check = match command {
         // These read neither the configuration (beyond its location) nor
@@ -294,16 +367,15 @@ fn run(cli: Cli) -> Result<u8, Exit> {
         Some(Cmd::Config {
             action: ConfigCmd::Show,
         }) => {
-            let setup = Setup::load(&global)?;
+            let setup = Setup::load(&global, hostctl)?;
             print(&setup.config.to_toml())?;
             return Ok(0);
         }
         Some(Cmd::Tui { hosts }) => {
             if !io::stdout().is_terminal() {
-                return Err(Exit::Usage(
-                    "the dashboard needs a terminal (stdout isn't one): use `hostctl status`"
-                        .into(),
-                ));
+                return Err(Exit::Usage(format!(
+                    "the dashboard needs a terminal (stdout isn't one): use `{hostctl} status`"
+                )));
             }
             Check::Tui { hosts }
         }
@@ -313,11 +385,11 @@ fn run(cli: Cli) -> Result<u8, Exit> {
         Some(Cmd::Hosts { hosts }) => Check::Hosts { hosts },
         None => Check::default_for(live::drawable(&io::stdout())),
     };
-    checking(&global, check)
+    checking(&global, hostctl, check)
 }
 
 /// Run `check` in a fresh runtime, with hostctl's signal handling.
-fn checking(global: &GlobalArgs, check: Check) -> Result<u8, Exit> {
+fn checking(global: &GlobalArgs, hostctl: &str, check: Check) -> Result<u8, Exit> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -329,7 +401,7 @@ fn checking(global: &GlobalArgs, check: Check) -> Result<u8, Exit> {
         Signals::new().map_err(|e| Exit::Usage(format!("can't handle signals: {e}")))?
     };
     // Blocking work (files, the passwd database) before going async.
-    let setup = Setup::load(global)?;
+    let setup = Setup::load(global, hostctl)?;
     let cache = open_cache(&setup.config);
     let result = runtime.block_on(async {
         let engine = Engine::new(&setup.config, cache, setup.freshness);
@@ -352,12 +424,16 @@ struct Setup {
     freshness: Freshness,
     /// Colors on stdout.
     color: bool,
+    /// How to run hostctl again in this context ([`AppState::command`]).
+    command: String,
 }
 
 impl Setup {
     /// Load the configuration and apply the global flags (blocking: reads
-    /// files, maybe the passwd database).
-    fn load(global: &GlobalArgs) -> Result<Setup, Exit> {
+    /// files, maybe the passwd database). `hostctl` is how to run hostctl
+    /// again with the same flags ([`command_prefix`]); a flake found in the
+    /// current directory is added to it.
+    fn load(global: &GlobalArgs, hostctl: &str) -> Result<Setup, Exit> {
         let (mut config, path) =
             Config::load(global.config.as_deref()).map_err(|e| Exit::Usage(format!("{e:#}")))?;
         config
@@ -368,8 +444,12 @@ impl Setup {
                 no_cache: global.no_cache,
             })
             .map_err(|e| Exit::Usage(format!("{e:#}")))?;
+        let mut command = hostctl.to_string();
         if config.flake.is_none() {
             config.flake = flake_here(std::env::current_dir().ok().as_deref());
+            if let Some(flake) = &config.flake {
+                command.push_str(&format!(" -f {}", remote::sh_quote(flake)));
+            }
         }
         let local = LocalInfo::detect(config.self_host.clone());
         let color = use_color(
@@ -384,6 +464,7 @@ impl Setup {
             local,
             freshness: freshness(global.refresh, global.offline),
             color,
+            command,
         })
     }
 
@@ -605,6 +686,7 @@ impl Selection {
         let hosts = self.hosts.iter().map(|(_, host)| host.clone()).collect();
         let mut state = AppState::new(hosts).with_flakes(&self.known, Instant::now());
         state.config_path.clone_from(&setup.path);
+        state.command.clone_from(&setup.command);
         state
     }
 }
@@ -720,7 +802,8 @@ async fn diff(
         } else {
             format!(
                 "the new generation of {name} isn't built anywhere yet: \
-                 `hostctl diff --build {}` builds it {}",
+                 `{} diff --build {}` builds it {}",
+                setup.command,
                 crate::remote::sh_quote(&name),
                 build_place(host)
             )
@@ -1449,6 +1532,52 @@ mod tests {
     }
 
     #[test]
+    fn suggested_commands_keep_the_flags_that_choose_the_hosts() {
+        let cwd = Path::new("/home/jj/src");
+        let prefix = |args: &[&str]| {
+            let args = std::iter::once("hostctl").chain(args.iter().copied());
+            let (cli, given) = super::parse(args.map(std::ffi::OsString::from)).unwrap();
+            command_prefix(&cli.global, given, Some(cwd))
+        };
+        assert_eq!(prefix(&["status"]), "hostctl");
+        assert_eq!(
+            prefix(&["-c", "hosts.toml", "status"]),
+            "hostctl -c /home/jj/src/hosts.toml"
+        );
+        // Wherever the flags go: relative paths made absolute, values quoted.
+        assert_eq!(
+            prefix(&[
+                "status",
+                "--self",
+                "my desk",
+                "-f",
+                ".",
+                "--config",
+                "./a b.toml"
+            ]),
+            "hostctl -c '/home/jj/src/a b.toml' -f /home/jj/src --self 'my desk'"
+        );
+        assert_eq!(
+            prefix(&["-f", "../nix", "-c", "/etc/hostctl/config.toml", "tui"]),
+            "hostctl -c /etc/hostctl/config.toml -f /home/jj/src/../nix"
+        );
+        // Flake references other than paths mean the same anywhere; the other
+        // flags don't change which hosts a command is about.
+        assert_eq!(
+            prefix(&[
+                "-f",
+                "github:jj/nix-config",
+                "-j",
+                "3",
+                "--refresh",
+                "--no-cache"
+            ]),
+            "hostctl -f github:jj/nix-config"
+        );
+        assert_eq!(prefix(&["-f", "", "--self", ""]), "hostctl");
+    }
+
+    #[test]
     fn usage_errors_exit_3_and_help_exits_0() {
         for bad in [
             &["--bogus"][..],
@@ -1717,6 +1846,7 @@ mod tests {
             },
             freshness: Freshness::Auto,
             color: false,
+            command: "hostctl -c /etc/hostctl/config.toml".into(),
         };
         let state = selection.state(&setup);
         assert_eq!(state.hosts.len(), 2);
@@ -1724,6 +1854,7 @@ mod tests {
             state.config_path.as_deref(),
             Some(Path::new("/etc/hostctl/config.toml"))
         );
+        assert_eq!(state.command, "hostctl -c /etc/hostctl/config.toml");
         // Discovery resolved the flake: no "resolving…" while checking.
         assert!(state.flake_info("github:jjant/nix-config").is_some());
         assert!(!state.is_busy());

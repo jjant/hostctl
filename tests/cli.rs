@@ -73,6 +73,40 @@ fn outdated_and_never_activated_hosts_exit_1() {
 }
 
 #[test]
+fn suggestions_carry_the_flags_the_run_was_given() {
+    let (w, host) = activation_world();
+    // The config lives elsewhere, named with -c relative to the working
+    // directory: the update line names it, absolute.
+    let hosts = w.root().join("hosts.toml");
+    std::fs::rename(&w.config_file, &hosts).unwrap();
+    let run = w.run(&["-c", "hosts.toml", "status", "--plain"]);
+    run.code(1);
+    let update = format!("hostctl -c {} activate web1", hosts.display());
+    assert!(
+        run.stdout.ends_with(&format!("\nupdate: {update}\n")),
+        "{run}"
+    );
+    // Pasted as it is, it works.
+    let args: Vec<&str> = update.split(' ').skip(1).chain(["--yes"]).collect();
+    let pasted = w.run(&args);
+    pasted.code(0);
+    assert!(
+        pasted.stdout.ends_with("✓ web1 is up to date\n"),
+        "{pasted}"
+    );
+
+    // From the environment, the flag isn't needed again.
+    host.home_manager(5, &hm('a'));
+    w.env("HOSTCTL_CONFIG", Some(hosts.to_str().unwrap()));
+    let run = w.run(&["status", "--plain"]);
+    run.code(1);
+    assert!(
+        run.stdout.ends_with("\nupdate: hostctl activate web1\n"),
+        "{run}"
+    );
+}
+
+#[test]
 fn without_a_command_or_a_terminal_hostctl_prints_the_status() {
     let w = World::new();
     w.flake(REV1);

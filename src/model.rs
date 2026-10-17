@@ -421,19 +421,38 @@ pub struct Summary {
     pub offline: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub hosts: Vec<HostState>,
     pub flakes: Vec<FlakeState>,
     /// The current/last check.
     pub run: Slot<()>,
     pub config_path: Option<PathBuf>,
+    /// How to run hostctl again in this context, shell-quoted: what the
+    /// commands hostctl suggests or copies start with (`hostctl`, plus the
+    /// `-c`/`-f`/`--self` this run was given).
+    pub command: String,
     /// Problems not tied to a host, newest last.
     pub errors: Vec<ErrorInfo>,
     /// `nix` or `ssh` couldn't be run ([`Event::Unrunnable`], whose error
     /// is in `errors` too).
     pub unrunnable: bool,
     pub interrupted: bool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        AppState {
+            hosts: Vec::new(),
+            flakes: Vec::new(),
+            run: Slot::default(),
+            config_path: None,
+            command: "hostctl".into(),
+            errors: Vec::new(),
+            unrunnable: false,
+            interrupted: false,
+        }
+    }
 }
 
 impl AppState {
@@ -1035,6 +1054,7 @@ mod tests {
     #[test]
     fn tracks_flakes_and_runs() {
         let mut s = AppState::new(vec![host("a", "f"), host("b", "g"), host("c", "g")]);
+        assert_eq!(s.command, "hostctl", "without context, plain hostctl");
         assert_eq!(s.flakes.len(), 2);
         assert_eq!(s.primary_flake().unwrap().url, "g");
         s.apply(Event::RunStarted, Instant::now());

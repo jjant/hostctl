@@ -719,7 +719,7 @@ impl App {
         };
         match self.activation(id) {
             Ok(activation) => {
-                let text = actions::copy_text(&h.host, &activation);
+                let text = actions::copy_text(&h.host, &activation, &self.state.command);
                 self.flash(format!("copied: {text}"), now);
                 Command::Copy(text)
             }
@@ -1986,6 +1986,12 @@ mod tests {
             app.current_flash(now),
             Some("copied: hostctl activate al2-aarch64")
         );
+        // With the flags hostctl was started with.
+        app.state.command = "hostctl -c /home/jj/hosts.toml".into();
+        assert_eq!(
+            app.on_key(ch('y'), now),
+            Command::Copy("hostctl -c /home/jj/hosts.toml activate al2-aarch64".into())
+        );
         select(&mut app, "bigmem");
         let Command::Copy(text) = app.on_key(ch('y'), now) else {
             panic!("expected a copy");
@@ -1994,7 +2000,7 @@ mod tests {
         assert_eq!(activation.runs_on, RunsOn::Here);
         assert_eq!(
             text,
-            actions::copy_text(&app.state.hosts[3].host, &activation),
+            actions::copy_text(&app.state.hosts[3].host, &activation, "hostctl"),
             "local: the command itself, ready to paste"
         );
         // Copying is allowed on busy hosts but needs an activation.

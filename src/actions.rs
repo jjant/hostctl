@@ -205,11 +205,13 @@ fn warning(host: &Host, flake: &FlakeInfo) -> Option<String> {
 /// What `y` copies: something that does the right thing in whatever shell
 /// it's pasted into — `sh -c '<command>'` when it runs here (templates are
 /// POSIX sh; fish or zsh with EXTENDED_GLOB would misread them bare), else
-/// `hostctl activate <name>` (which re-checks and confirms).
-pub fn copy_text(host: &Host, activation: &Activation) -> String {
+/// `<hostctl> activate <name>` (which re-checks and confirms), where
+/// `hostctl` is how to run hostctl in this context
+/// ([`crate::model::AppState::command`]).
+pub fn copy_text(host: &Host, activation: &Activation, hostctl: &str) -> String {
     match activation.runs_on {
         RunsOn::Here => format!("sh -c {}", sh_quote(&activation.command)),
-        RunsOn::Remote => format!("hostctl activate {}", sh_quote(&host.name)),
+        RunsOn::Remote => format!("{hostctl} activate {}", sh_quote(&host.name)),
     }
 }
 
@@ -588,7 +590,7 @@ mod tests {
             }
         );
         assert_eq!(
-            copy_text(&bigmem, &activation),
+            copy_text(&bigmem, &activation, "hostctl"),
             format!("sh -c {}", sh_quote(&activation.command))
         );
     }
@@ -605,7 +607,10 @@ mod tests {
         );
         assert_eq!(activation.runs_on, RunsOn::Remote);
         assert_eq!(activation.warning, None);
-        assert_eq!(copy_text(&web1, &activation), "hostctl activate web1");
+        assert_eq!(
+            copy_text(&web1, &activation, "hostctl"),
+            "hostctl activate web1"
+        );
 
         let mac = host("mac-m1", Kind::Darwin, ssh("ssh://jj@mac.example.com:2022"));
         let activation = super::activation(&mac, &github(), &desired()).unwrap();
@@ -664,7 +669,7 @@ mod tests {
                 activation.command
             );
             assert_eq!(
-                copy_text(&web1, &activation),
+                copy_text(&web1, &activation, "hostctl"),
                 format!("sh -c {}", sh_quote(&activation.command))
             );
         }
@@ -862,12 +867,21 @@ mod tests {
         };
         assert!(runs_here(&host));
         assert_eq!(
-            copy_text(&host, &activation(RunsOn::Here)),
+            copy_text(&host, &activation(RunsOn::Here), "hostctl"),
             "sh -c 'home-manager switch'"
         );
         assert_eq!(
-            copy_text(&host, &activation(RunsOn::Remote)),
+            copy_text(&host, &activation(RunsOn::Remote), "hostctl"),
             "hostctl activate 'al2 x86'"
+        );
+        // The context hostctl runs in comes along.
+        assert_eq!(
+            copy_text(
+                &host,
+                &activation(RunsOn::Remote),
+                "hostctl -c /home/jj/hosts.toml --self desk"
+            ),
+            "hostctl -c /home/jj/hosts.toml --self desk activate 'al2 x86'"
         );
     }
 

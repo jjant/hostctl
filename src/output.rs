@@ -80,7 +80,8 @@ const CYAN: &str = "36";
 /// - footer: non-zero counts in [`Status`] order, the `•` legend when a
 ///   local host is shown, the last run's duration if known; then `update:
 ///   hostctl activate <names>` for hosts that need activation and have an
-///   activation; then `error: <summary>` per global error;
+///   activation (`hostctl` as [`AppState::command`] says, with the flags
+///   this run was given); then `error: <summary>` per global error;
 /// - with `style.color`: green ✓, yellow ✗ and ○, red !, magenta ?, cyan
 ///   pending, dim offline, detail and footer.
 ///
@@ -403,7 +404,7 @@ fn footer<'a>(state: &'a AppState, rows: &[Row<'_>]) -> Vec<Line<'a>> {
     if !names.is_empty() {
         let mut line = Line::default();
         line.push("update:", DIM)
-            .push(" hostctl activate", PLAIN)
+            .push(format!(" {} activate", one_line(&state.command)), PLAIN)
             .push(names, PLAIN);
         lines.push(line);
     }
@@ -2088,6 +2089,15 @@ update: hostctl activate al2-aarch64 al2-x86_64
         assert_eq!(
             update,
             "update: hostctl activate al2-aarch64 'it'\\''s a box'"
+        );
+        // Started with flags: the suggestion has them too.
+        sim.state.command = "hostctl -c '/home/jj/my hosts.toml' -f github:jj/nix".into();
+        let table = sim.table(NO_COLOR, None);
+        let update = table.lines().find(|l| l.starts_with("update:")).unwrap();
+        assert_eq!(
+            update,
+            "update: hostctl -c '/home/jj/my hosts.toml' -f github:jj/nix activate al2-aarch64 \
+             'it'\\''s a box'"
         );
     }
 
