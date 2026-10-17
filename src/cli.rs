@@ -1021,12 +1021,16 @@ async fn build_desired(
         command_text(&command, "  ")
     ));
     let label = format!("preparing the build on {name}");
-    let spec = live::wait_for(&label, engine.prepare_interactive(host, &command), signals)
+    let prepared = live::wait_for(&label, engine.prepare_interactive(host, &command), signals)
         .await
         .ok_or(Exit::Interrupted)?
         .map_err(|e| Exit::Trouble(format!("can't build for {name}: {}", describe(&e))))?;
-    let spec = if json { stdout_to_stderr(spec) } else { spec };
-    match interactive(&spec, signals).await? {
+    let spec = if json {
+        stdout_to_stderr(prepared.spec)
+    } else {
+        prepared.spec
+    };
+    match run_prepared(engine, host, &spec, prepared.upload.as_deref(), signals).await? {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => Err(Exit::Trouble(format!(
             "the build for {name} failed ({})",
@@ -1084,6 +1088,26 @@ async fn interactive(
             },
         }
     }
+}
+
+/// [`interactive`] for a command [`Engine::prepare_interactive`] prepared
+/// for `host`. The script it `upload`ed removes itself once it runs; when
+/// the run may not have got that far (it failed, couldn't connect, was cut
+/// short), hostctl removes it.
+async fn run_prepared(
+    engine: &Engine,
+    host: &Host,
+    spec: &CommandSpec,
+    upload: Option<&str>,
+    signals: &mut Signals,
+) -> Result<io::Result<ExitStatus>, Exit> {
+    let ran = interactive(spec, signals).await;
+    if let Some(path) = upload
+        && !matches!(&ran, Ok(Ok(status)) if status.success())
+    {
+        engine.discard_upload(host, path).await;
+    }
+    ran
 }
 
 async fn activate(
@@ -1159,8 +1183,8 @@ async fn activate(
         )
         .await
         .ok_or(Exit::Interrupted)?;
-        let spec = match prepared {
-            Ok(spec) => spec,
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
             Err(e) => {
                 eprint(&format!(
                     "error: can't run the activation of {name}: {}\n",
@@ -1169,7 +1193,8 @@ async fn activate(
                 continue;
             }
         };
-        let ran = interactive(&spec, signals).await?;
+        let upload = prepared.upload.as_deref();
+        let ran = run_prepared(engine, &host, &prepared.spec, upload, signals).await?;
         let label = format!("checking {name} again");
         live::wait_for(&label, engine.probe(id, &host, &tx), signals)
             .await

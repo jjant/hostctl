@@ -19,6 +19,9 @@
 #   forced       the answer to any command other than `sh …`, like a
 #                forced-command route; without it such a command fails the
 #                way mac-open-recv does ("unknown mode", exit 1)
+#   interactive-unreachable
+#                an interactive run (`sh <file>`) fails to connect: this
+#                text on stderr, exit 255 (other runs go on as usual)
 #
 # An interactive run (`sh <file>`) first copies <file> to interactive.sh.
 # Every call appends "start <pid> ssh <argv…>" to $HOSTCTL_FAKE/log, and
@@ -72,6 +75,10 @@ unset XDG_STATE_HOME
 mkdir -p "$TMPDIR"
 case ${1:-} in
 sh)
+  if [ $# -eq 2 ] && [ "$2" != -s ] && [ -f "$H/interactive-unreachable" ]; then
+    cat "$H/interactive-unreachable" >&2
+    finish 255
+  fi
   if [ $# -eq 2 ] && [ "$2" != -s ] && [ -f "$2" ]; then
     cp "$2" "$H/interactive.sh"
   fi

@@ -35,6 +35,7 @@ use crate::engine::{Engine, EventTx, Freshness};
 use crate::live::{Received, Sig, Signals};
 use crate::model::{AppState, Event, HostId};
 use crate::nix::FlakeInfo;
+use crate::remote::CommandSpec;
 use crate::util;
 
 #[derive(Debug, Clone, Copy)]
@@ -544,23 +545,18 @@ async fn suspended(
                 let _ = write_stdout(&format!("  {}\n", e.detail.replace('\n', "\n  ")));
                 Ran::NotRun(e.summary)
             }
-            Ok(spec) => {
-                let mut running = std::pin::pin!(crate::exec::run_interactive(&spec));
-                loop {
-                    tokio::select! {
-                        status = &mut running => break match status {
-                            Ok(status) => Ran::Exited(status),
-                            Err(e) => Ran::NotRun(format!(
-                                "can't run {}: {e}",
-                                util::sanitize_terminal(&spec.program)
-                            )),
-                        },
-                        // SIGINT is the command's (one racing its start
-                        // reached hostctl instead).
-                        sig = signals.recv() => if sig != Sig::Interrupt {
-                            return Suspended { ran: Ran::NotRun("signal".into()), quit: true };
-                        },
-                    }
+            Ok(prepared) => {
+                let ran = attached(&prepared.spec, signals).await;
+                // The uploaded script removes itself once it runs: unless
+                // it surely did, remove it.
+                if let Some(path) = &prepared.upload
+                    && !matches!(&ran, Some(Ran::Exited(status)) if status.success())
+                {
+                    engine.discard_upload(host, path).await;
+                }
+                match ran {
+                    Some(ran) => ran,
+                    None => return Suspended { ran: Ran::NotRun("signal".into()), quit: true },
                 }
             }
         },
@@ -570,6 +566,27 @@ async fn suspended(
     // reports the failure itself when it can't read it either).
     let quit = press_enter(signals).await.unwrap_or(false);
     Suspended { ran, quit }
+}
+
+/// Run `spec` attached to the terminal; `None` when SIGTERM or SIGHUP came
+/// first (SIGINT is the command's: one racing its start that reached
+/// hostctl is ignored).
+async fn attached(spec: &CommandSpec, signals: &mut Signals) -> Option<Ran> {
+    let mut running = std::pin::pin!(crate::exec::run_interactive(spec));
+    loop {
+        tokio::select! {
+            status = &mut running => return Some(match status {
+                Ok(status) => Ran::Exited(status),
+                Err(e) => Ran::NotRun(format!(
+                    "can't run {}: {e}",
+                    util::sanitize_terminal(&spec.program)
+                )),
+            }),
+            sig = signals.recv() => if sig != Sig::Interrupt {
+                return None;
+            },
+        }
+    }
 }
 
 /// What runs where, before a suspended command: `hostctl: activating

@@ -1797,6 +1797,23 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
 }
 
 #[test]
+fn an_upload_whose_run_never_connected_is_removed() {
+    let (w, host) = activation_world();
+    host.interactive_unreachable("ssh: connect to host web1 port 22: Connection timed out");
+    let run = w.run(&["activate", "--yes", "web1"]);
+    run.code(2);
+    assert!(
+        run.stdout
+            .ends_with("web1: the activation failed (exit 255)\n✗ web1 is outdated\n"),
+        "{run}"
+    );
+    assert!(run.stderr.contains("Connection timed out"), "{run}");
+    // The script that would have removed itself never ran: hostctl did it.
+    assert_eq!(host.temporary_files(), Vec::<String>::new(), "{}", w.log());
+    assert!(host.interactive_script().is_none());
+}
+
+#[test]
 fn activate_without_a_terminal_needs_yes() {
     let w = World::new();
     w.flake(REV1);

@@ -881,6 +881,26 @@ impl FakeHost {
         self
     }
 
+    /// An interactive run (`ssh -t … sh <file>`) fails to connect with
+    /// `stderr` (exit 255); unattended ones work.
+    pub fn interactive_unreachable(&self, stderr: &str) -> &Self {
+        write(
+            self.dir.join("interactive-unreachable"),
+            format!("{stderr}\n"),
+        );
+        self
+    }
+
+    /// Files left in its temporary directory.
+    pub fn temporary_files(&self) -> Vec<String> {
+        match fs::read_dir(self.at("/tmp")) {
+            Ok(dir) => dir
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// While multiplexed, ssh exits 255 without a word.
     pub fn silent_255(&self) -> &Self {
         write(self.dir.join("silent-255"), "");

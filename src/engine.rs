@@ -57,6 +57,9 @@ pub const MAX_NEW_CONNECTIONS: usize = 10;
 /// `nix --version` gets this long.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// [`Engine::discard_upload`] gets at most this long: it is only tidying up.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A closure listing gets at least this long (or the probe timeout, if
 /// longer): it reads whole closures, possibly over a slow link.
 const MIN_LISTING_TIMEOUT: Duration = Duration::from_secs(60);
@@ -402,7 +405,7 @@ impl Engine {
     /// [`crate::remote::interactive_script`] with
     /// [`crate::remote::upload_command`] (checked with
     /// [`crate::remote::is_safe_remote_path`]) and returning the `ssh -t …
-    /// sh <path>` command.
+    /// sh <path>` command, and the path (for [`Engine::discard_upload`]).
     ///
     /// The upload's path is the last line it printed, trimmed (login-shell
     /// noise may precede it). Forced-command routes have no shell: an error.
@@ -410,12 +413,15 @@ impl Engine {
         &self,
         host: &Host,
         command: &str,
-    ) -> Result<CommandSpec, ErrorInfo> {
+    ) -> Result<Prepared, ErrorInfo> {
         let target = match &host.target {
             Target::Ssh(target) if !actions::runs_here(host) => target,
             here => {
                 let ssh = self.ssh_config();
-                return Ok(remote::interactive_command(here, &ssh, command, None));
+                return Ok(Prepared {
+                    spec: remote::interactive_command(here, &ssh, command, None),
+                    upload: None,
+                });
             }
         };
         if target.forced_command.is_some() {
@@ -455,12 +461,28 @@ impl Engine {
             )));
         }
         let ssh = self.ssh_config();
-        Ok(remote::interactive_command(
-            &host.target,
-            &ssh,
-            command,
-            Some(path),
-        ))
+        Ok(Prepared {
+            spec: remote::interactive_command(&host.target, &ssh, command, Some(path)),
+            upload: Some(path.to_string()),
+        })
+    }
+
+    /// Remove the script [`Engine::prepare_interactive`] uploaded to `host`
+    /// at `path`, best effort, for when the interactive run that removes it
+    /// first thing may not have started (it failed to connect, or was cut
+    /// short): `rm -f -- <path>` over the unattended channel, given at most
+    /// 5 s (or the probe timeout, if shorter).
+    pub async fn discard_upload(&self, host: &Host, path: &str) {
+        if !remote::is_safe_remote_path(path) || host.ssh().is_none() {
+            return;
+        }
+        let script = format!("rm -f -- {}\n", remote::sh_quote(path));
+        let timeout = self.inner.config.timeout.0.min(CLEANUP_TIMEOUT);
+        let _ = self
+            .run_on(&host.target, Some(timeout), |ssh, mux| {
+                (remote::script_command(&host.target, ssh, mux, &script), ())
+            })
+            .await;
     }
 
     /// Write the cache now (e.g. on quit or interrupt); errors are ignored.
@@ -1166,6 +1188,16 @@ impl Engine {
         let inner = Arc::clone(&self.inner);
         let _ = tokio::task::spawn_blocking(move || inner.save_cache()).await;
     }
+}
+
+/// An interactive command, ready to run ([`Engine::prepare_interactive`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prepared {
+    pub spec: CommandSpec,
+    /// Where the script was uploaded on the host, when it was: it removes
+    /// itself once it runs ([`Engine::discard_upload`] if that may not
+    /// have happened).
+    pub upload: Option<String>,
 }
 
 /// One check's (or other operation's) reporting: events, and whether nix /
@@ -3811,7 +3843,8 @@ error:
         let spec = engine
             .prepare_interactive(&remote("web2"), "true")
             .await
-            .unwrap();
+            .unwrap()
+            .spec;
         assert!(fake.calls()[3].has("StrictHostKeyChecking=yes"));
         assert!(spec.args.windows(2).any(|w| w == STRICT_HOST_KEYS));
     }
@@ -4126,7 +4159,10 @@ error:
             engine
                 .prepare_interactive(&local("bigmem"), "make it so")
                 .await,
-            Ok(here.clone())
+            Ok(Prepared {
+                spec: here.clone(),
+                upload: None
+            })
         );
         let push = Host {
             activate_on: ActivateOn::Local,
@@ -4134,7 +4170,10 @@ error:
         };
         assert_eq!(
             engine.prepare_interactive(&push, "make it so").await,
-            Ok(here)
+            Ok(Prepared {
+                spec: here,
+                upload: None
+            })
         );
         assert!(fake.calls().is_empty());
     }
@@ -4148,7 +4187,9 @@ error:
         );
         let engine = engine(&config(), Cache::in_memory(), &fake);
         let host = remote("web1");
-        let spec = engine.prepare_interactive(&host, "echo hi").await.unwrap();
+        let prepared = engine.prepare_interactive(&host, "echo hi").await.unwrap();
+        assert_eq!(prepared.upload.as_deref(), Some("/tmp/hostctl.AbC123"));
+        let spec = prepared.spec;
         let want = remote::interactive_command(
             &host.target,
             &config().ssh,
@@ -4172,6 +4213,42 @@ error:
         );
         assert_eq!(call.spec, upload);
         assert_eq!(call.timeout, Some(Duration::from_secs(20)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_upload_is_discarded_over_the_unattended_channel() {
+        let fake = Fake::new();
+        fake.on("script web1", Reply::ok(""));
+        let engine = engine(&config(), Cache::in_memory(), &fake);
+        let host = remote("web1");
+        engine.discard_upload(&host, "/tmp/hostctl.AbC123").await;
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        let Some(target) = host.ssh() else {
+            unreachable!()
+        };
+        let want = remote::script_command(
+            &host.target,
+            &config().ssh,
+            &Mux::Off,
+            "rm -f -- /tmp/hostctl.AbC123\n",
+        );
+        assert_eq!(calls[0].spec, want);
+        assert!(target.forced_command.is_none());
+        assert_eq!(calls[0].timeout, Some(CLEANUP_TIMEOUT));
+        // A failure is nobody's business; nothing that isn't a path we
+        // uploaded is touched, and nothing runs for local hosts.
+        let fake = Fake::new();
+        fake.on("script web1", Reply::exit(255, REFUSED));
+        let engine = self::engine(&config(), Cache::in_memory(), &fake);
+        engine.discard_upload(&host, "/tmp/hostctl.x").await;
+        engine
+            .discard_upload(&host, "/tmp/hostctl.x; rm -rf ~")
+            .await;
+        engine
+            .discard_upload(&local("bigmem"), "/tmp/hostctl.x")
+            .await;
+        assert_eq!(fake.calls().len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4360,6 +4437,7 @@ error:
         send(&engine.probe(0, &host, &tx));
         send(&engine.diff(0, &host, &path, &path, &tx));
         send(&engine.prepare_interactive(&host, "x"));
+        send(&engine.discard_upload(&host, "/tmp/hostctl.x"));
         send(&engine.resolve("x"));
         send(&engine.discover("x"));
     }
