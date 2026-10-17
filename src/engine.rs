@@ -92,10 +92,21 @@ pub enum Freshness {
     Auto,
     /// Always `--refresh` (`--refresh`, the TUI's `r`).
     Force,
-    /// Never touch the network: cached resolutions and results only
-    /// (`--offline`); a flake without a cached resolution fails.
+    /// Never touch the network (`--offline`): no `nix flake metadata`, no
+    /// evaluation; cached resolutions, results and host lists only. A flake
+    /// without a cached resolution fails, and so does whatever its results
+    /// lack ([`NOT_CACHED`]).
     Offline,
 }
+
+/// The summary of an evaluation (or discovery) [`Freshness::Offline`] can't
+/// do because its result isn't cached.
+pub const NOT_CACHED: &str = "not cached; run hostctl once without --offline";
+
+/// The detail of [`NOT_CACHED`].
+const NOT_CACHED_DETAIL: &str = "--offline evaluates nothing: it only uses what earlier runs \
+                                 cached (and nothing is cached for dirty trees, outdated lock \
+                                 files, impure nix.options or with the cache off)";
 
 /// Runs checks. Cheap to clone; clones share the cache and the limits.
 #[derive(Clone)]
@@ -223,7 +234,8 @@ impl Engine {
 
     /// Resolve `flake` and read the hosts it describes ([`FlakeHosts`]:
     /// discovered configurations + inventory) — from the cache when the
-    /// flake's key has them, else one pure evaluation (recorded).
+    /// flake's key has them, else one pure evaluation (recorded); under
+    /// [`Freshness::Offline`], a cache miss is an error ([`NOT_CACHED`]).
     ///
     /// The key also covers `inventory`. The cache is saved by the caller
     /// ([`Self::save_cache`]) or the next check.
@@ -248,6 +260,12 @@ impl Engine {
             && let Some(hosts) = self.with_cache(|cache| cache.hosts(key, util::now_unix()))
         {
             return Ok((info, hosts));
+        }
+        if self.freshness == Freshness::Offline {
+            return Err(ErrorInfo::new(
+                format!("can't read the hosts of {flake}: {NOT_CACHED}"),
+                NOT_CACHED_DETAIL,
+            ));
         }
         let spec = config.nix.hosts(&info.locked, &config.inventory);
         let timeout = config.eval_timeout.non_zero();
@@ -283,9 +301,11 @@ impl Engine {
     ///   in parallel, emitting `FlakeStarted`/`FlakeFinished`;
     /// - desired paths: per `(flake, attr)` one evaluation shared by all
     ///   hosts with that attr; from the cache when [`Cache::key`] has the
-    ///   attr (no `EvalStarted`); else `nix eval` (≤ `jobs` at once, the
-    ///   longest-running first per the cache's hints), `--read-only` first
-    ///   when enabled unless the hint says it fails, retried without it on
+    ///   attr (no `EvalStarted`); otherwise, under [`Freshness::Offline`],
+    ///   an error ([`NOT_CACHED`], no `EvalStarted`); else `nix eval`
+    ///   (≤ `jobs` at once, the longest-running first per the cache's
+    ///   hints), `--read-only` first when enabled unless the hint says it
+    ///   fails, retried without it on
     ///   [`crate::nix::is_read_only_failure`] (keeping the slot); results
     ///   and hints recorded in the cache; `eval-timeout` applies;
     /// - a flake that can't be resolved fails the evaluation of each of its
@@ -624,7 +644,8 @@ impl Engine {
         }
     }
 
-    /// Report the cache hits of a resolved flake and queue its misses.
+    /// Report the cache hits of a resolved flake and queue its misses (fail
+    /// them, under [`Freshness::Offline`]).
     fn plan<'f>(
         &self,
         run: &Run<'_>,
@@ -654,6 +675,15 @@ impl Engine {
                         run.send(Event::EvalFinished {
                             id,
                             result: Ok(desired.clone()),
+                        });
+                    }
+                }
+                None if self.freshness == Freshness::Offline => {
+                    let error = ErrorInfo::new(NOT_CACHED, NOT_CACHED_DETAIL);
+                    for &id in hosts {
+                        run.send(Event::EvalFinished {
+                            id,
+                            result: Err(error.clone()),
                         });
                     }
                 }
@@ -3068,40 +3098,75 @@ error:
     }
 
     #[tokio::test(start_paused = true)]
-    async fn offline_checks_use_cached_resolutions_only() {
+    async fn offline_checks_use_cached_resolutions_and_results_only() {
         let fake = world();
-        fake.on(
-            &format!("eval-ro {}", attr("a")),
-            evaluates(&sp('a', "a")).after(100),
-        )
-        .on("probe a", running(&sp('a', "a")))
-        .on("probe b", running(&sp('a', "a")));
+        for name in ["a", "b", "c"] {
+            fake.on(
+                &format!("eval-ro {}", attr(name)),
+                evaluates(&sp('a', name)).after(100),
+            )
+            .on(&format!("probe {name}"), running(&sp('0', "old")));
+        }
+        let info = github(GITHUB, REV1);
         let mut cache = Cache::in_memory();
-        cache.record_resolution(&github(GITHUB, REV1), util::now_unix() - 7 * 86_400);
+        cache.record_resolution(&info, util::now_unix() - 7 * 86_400);
+        cache.record_out_path(&key_of(&info), &info, &attr("a"), &sp('a', "a"), 1);
         let engine = Engine::assemble(&config(), cache, Freshness::Offline, fake.runner(), None);
         // Ids need not be 0..n: they index the front-end's hosts.
-        let hosts = vec![(4, remote("a")), (9, on_flake(OTHER, remote("b")))];
+        let hosts = vec![
+            (4, remote("a")),
+            (6, remote("b")),
+            (9, on_flake(OTHER, remote("c"))),
+        ];
         let seen = check(&engine, &hosts, &[]).await;
         let never = "github:o/other was never resolved, and --offline only uses cached resolutions";
+        let missing = "not cached; run hostctl once without --offline";
         assert_eq!(
             lines(&seen),
             [
                 "0 run+".to_string(),
                 "0 probe+ 4".into(),
+                "0 probe+ 6".into(),
                 "0 probe+ 9".into(),
                 "0 flake+ github:o/r".into(),
                 "0 flake+ github:o/other".into(),
-                "0 probe- 4 a".into(),
-                "0 probe- 9 a".into(),
+                "0 probe- 4 old".into(),
+                "0 probe- 6 old".into(),
+                "0 probe- 9 old".into(),
                 "0 flake- github:o/r 42ea902".into(),
                 format!("0 flake- github:o/other error: {never}"),
                 format!("0 eval- 9 error: {never}"),
-                "5 eval+ 4".into(),
-                "105 eval- 4 a".into(),
-                "105 run-".into(),
+                "5 eval- 4 a (cached)".into(),
+                format!("5 eval- 6 error: {missing}"),
+                "5 run-".into(),
             ]
         );
-        assert!(!fake.keys().iter().any(|k| k.starts_with("metadata")));
+        // Nothing but the probes and `nix --version` (for the cache key).
+        let mut keys = fake.keys();
+        keys.sort();
+        assert_eq!(keys, ["probe a", "probe b", "probe c", "version"]);
+        let errors = eval_errors(&seen);
+        assert!(
+            errors[1].1.detail.contains("--offline evaluates nothing"),
+            "{}",
+            errors[1].1.detail
+        );
+
+        // Nor with the cache off: there is nothing to go on.
+        let fake = world();
+        fake.on("probe a", running(&sp('a', "a")));
+        let mut cache = Cache::in_memory();
+        cache.record_resolution(&info, util::now_unix());
+        let mut config = config();
+        config.cache = false;
+        let engine = Engine::assemble(&config, cache, Freshness::Offline, fake.runner(), None);
+        let seen = check(&engine, &ids(vec![remote("a")]), &[]).await;
+        assert!(
+            shown(&seen).contains(&format!("eval- 0 error: {missing}")),
+            "{:?}",
+            shown(&seen)
+        );
+        assert_eq!(fake.keys(), ["probe a"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4014,6 +4079,31 @@ error:
             "{}",
             error.summary
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn offline_discovery_reads_the_cache_only() {
+        let fake = world();
+        let locked = github(GITHUB, REV1).locked;
+        let discovery = format!("hosts {locked}");
+        fake.on(&discovery, Reply::ok(HOSTS_JSON));
+        let online = engine(&config(), Cache::in_memory(), &fake);
+        let (_, hosts) = online.discover(GITHUB).await.unwrap();
+        let offline = online.with_freshness(Freshness::Offline);
+        assert_eq!(offline.discover(GITHUB).await.unwrap().1, hosts);
+        assert_eq!(fake.calls_to(&discovery).len(), 1);
+
+        // Another inventory attribute was never read.
+        let mut config = config();
+        config.inventory = "fleet".into();
+        let cache = cache_of(&online);
+        let other = Engine::assemble(&config, cache, Freshness::Offline, fake.runner(), None);
+        let error = other.discover(GITHUB).await.unwrap_err();
+        assert_eq!(
+            error.summary,
+            "can't read the hosts of github:o/r: not cached; run hostctl once without --offline"
+        );
+        assert_eq!(fake.calls_to(&discovery).len(), 1, "no evaluation");
     }
 
     // ─── plumbing ───────────────────────────────────────────────────────

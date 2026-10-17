@@ -876,6 +876,42 @@ fn offline_uses_only_what_the_cache_has() {
 }
 
 #[test]
+fn offline_evaluates_nothing_the_cache_lacks() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    w.host("web2").home_manager(5, &hm('b'));
+    w.eval_fails(&hm_attr("web2"), "error: attribute 'web2' missing\n");
+    w.run(&["status"]).code(2);
+
+    // Nothing is cached for web2, whose evaluation failed.
+    w.clear_log();
+    let run = w.run(&["status", "--plain", "--offline"]);
+    run.code(2);
+    assert!(
+        run.stdout
+            .contains("\n  web2  ! eval failed  not cached; run hostctl once without --offline\n"),
+        "{run}"
+    );
+    assert!(run.stdout.contains("\n  web1  ✓ up to date  "), "{run}");
+    assert!(w.evals().is_empty(), "no evaluation:\n{}", w.log());
+
+    // Nor are the hosts of another inventory attribute.
+    w.config("inventory = \"lib.fleet\"\n");
+    let run = w.run(&["status", "--offline"]);
+    run.code(3);
+    assert!(
+        run.stderr.starts_with(
+            "error: can't read the hosts of github:o/r: not cached; run hostctl once without \
+             --offline\n  --offline evaluates nothing"
+        ),
+        "{run}"
+    );
+    assert!(w.nix_calls("eval --json").is_empty(), "{}", w.log());
+}
+
+#[test]
 fn the_cache_remembers_which_revision_a_host_runs() {
     let w = World::new();
     w.flake(REV1);
