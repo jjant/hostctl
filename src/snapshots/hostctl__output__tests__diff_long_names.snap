@@ -1,0 +1,10 @@
+---
+source: src/output.rs
+expression: text
+---
+web1: 2041 → 2043 paths · 9.0 GiB → 9.3 GiB (+350.0 MiB)
+  firefox                             131.0 → 132.0        +2.0 MiB  upgraded
+  nixos-system-web1                   25.11.20251201.1a2b3c4 → 25.11.20251215.42ea902              upgraded
+  python3.13-azure-mgmt-recoveryservicesbackup-passivestamp-extension  1.0.0b1 → 1.0.0b2    +1.0 MiB  upgraded
+  unit-script-nixos-activation-start  ∅ → ε                          added
+  zenoh                               ∅ → 1.10.0         +331.9 MiB  added

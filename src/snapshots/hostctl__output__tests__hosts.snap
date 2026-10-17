@@ -1,0 +1,16 @@
+---
+source: src/output.rs
+expression: text
+---
+al2-aarch64  home-manager  al2-aarch64                                            discovered             homeConfigurations.al2-aarch64.activationPackage
+al2-x86_64   home-manager  devhost-devuser1-1a-8d41e07a.dc-west1.example.com      discovered, config     homeConfigurations.al2-x86_64.activationPackage
+bigmem •     home-manager  local                                                  discovered             homeConfigurations.bigmem.activationPackage
+mac-m1       darwin        ssh://devuser1@localhost:2022 (probe: current-system)  discovered, config     darwinConfigurations.mac-m1.system
+mac-mini •?  darwin        local (assumed)                                        discovered             darwinConfigurations.mac-mini.system
+printer      custom        ssh://pi@[fe80::1]:2222                                inventory              packages.aarch64-linux.printer-image
+scratch      home-manager  scratch                                                discovered             path:/home/jj/scratch#homeConfigurations.scratch.activationPackage
+web1         nixos         root@web1.example.com                                  discovered, inventory  nixosConfigurations.web1.config.system.build.toplevel
+work-desk    home-manager  work-desk                                              config                 github:jjant/work-config#homeConfigurations.work-desk.activationPackage
+
+warning: "bigmem" is both a nixosConfigurations and a homeConfigurations entry; using nixos
+warning: exclude pattern "*-iso" matches no host

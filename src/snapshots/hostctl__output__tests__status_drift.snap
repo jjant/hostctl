@@ -1,0 +1,18 @@
+---
+source: src/output.rs
+expression: "sim.table(NO_COLOR, None)"
+---
+github:jjant/nix-config @ 42ea902 (2h ago)
+
+  darwin-gen      ✗ outdated    gen 41 · 3w ago · on 1a2b3c4
+  dirty-mac       ✗ outdated    gen 42 · 2d ago · on a8f62b6-dirty
+  hm-cache        ✗ outdated    gen 93 · 4mo ago · on 1a2b3c4 (4mo old)
+  hm-same         ✗ outdated    gen 12 · 3h ago · same rev, different build
+  hm-staged       ✗ outdated    gen 60 · 2d ago · staged: switch/reboot pending
+  hm-unknown      ✗ outdated    gen 9 · 12m ago · unknown generation
+  nixos-gaming    ✓ up to date  gen 77 · 6h ago · specialisation gaming
+  nixos-reboot    ✗ outdated    gen 120 · 5d ago · on 1a2b3c4 · ⟳ reboot
+  nixos-uptodate  ✓ up to date  gen 121 · 1d ago · ⟳ reboot
+
+7 outdated · 2 up to date · 3.4s
+update: hostctl activate darwin-gen dirty-mac hm-cache hm-same hm-staged hm-unknown nixos-reboot

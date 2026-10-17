@@ -1,0 +1,5 @@
+---
+source: src/output.rs
+expression: "diff_text(\"al2-x86_64\", &same, NO_COLOR)"
+---
+al2-x86_64: no package changes (702 paths)

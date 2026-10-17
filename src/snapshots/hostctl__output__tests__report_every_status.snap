@@ -1,0 +1,298 @@
+---
+source: src/output.rs
+expression: json
+---
+{
+  "errors": [],
+  "flakes": [
+    {
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "lastModified": 1792240011,
+      "lockOutdated": false,
+      "locked": "github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D",
+      "rev": "42ea902131b93c04d098d3bcd02f29305b4bad7c",
+      "stale": null
+    }
+  ],
+  "hosts": [
+    {
+      "activate": {
+        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
+        "runsOn": "remote"
+      },
+      "activated": 1781709200,
+      "attr": "homeConfigurations.al2-aarch64.activationPackage",
+      "booted": null,
+      "cached": false,
+      "current": "/nix/store/494amg2bizplp1s8485gr6b2k6pl4mxh-home-manager-generation",
+      "desired": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
+      "destination": "al2-aarch64",
+      "drift": {
+        "fromGeneration": false,
+        "lastModified": 1781104400,
+        "rev": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+        "type": "revision"
+      },
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "generation": 93,
+      "kind": "home-manager",
+      "local": null,
+      "name": "al2-aarch64",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "outdated",
+      "timings": {
+        "evalMs": 3000,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": {
+        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-x86_64.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
+        "runsOn": "remote"
+      },
+      "activated": null,
+      "attr": "homeConfigurations.al2-x86_64.activationPackage",
+      "booted": null,
+      "cached": false,
+      "current": null,
+      "desired": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
+      "destination": "al2-x86_64",
+      "drift": null,
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "generation": null,
+      "kind": "home-manager",
+      "local": null,
+      "name": "al2-x86_64",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "not-activated",
+      "timings": {
+        "evalMs": 3000,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": null,
+      "activated": 1791990800,
+      "attr": "homeConfigurations.al2023-x86_64.activationPackage",
+      "booted": null,
+      "cached": null,
+      "current": "/nix/store/1nvwx1ddkfhxws6vwff5rnf5hrhivqmp-home-manager-generation",
+      "desired": null,
+      "destination": "al2023-x86_64",
+      "drift": null,
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "generation": 41,
+      "kind": "home-manager",
+      "local": null,
+      "name": "al2023-x86_64",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "pending",
+      "timings": {
+        "evalMs": null,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": {
+        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.bigmem.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
+        "runsOn": "here"
+      },
+      "activated": 1792249280,
+      "attr": "homeConfigurations.bigmem.activationPackage",
+      "booted": null,
+      "cached": true,
+      "current": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
+      "desired": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
+      "destination": null,
+      "drift": null,
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "generation": 9,
+      "kind": "home-manager",
+      "local": "local",
+      "name": "bigmem",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "up-to-date",
+      "timings": {
+        "evalMs": null,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": null,
+      "activated": 1792077200,
+      "attr": "homeConfigurations.ci.activationPackage",
+      "booted": null,
+      "cached": null,
+      "current": "/nix/store/afvwn2ldnj8z50fisjnj40xpdq7602y4-home-manager-generation",
+      "desired": null,
+      "destination": "ci",
+      "drift": null,
+      "error": {
+        "detail": "error: attribute 'ci' missing\n       at «github:jjant/nix-config/42ea902…»/flake.nix:12:5:",
+        "summary": "attribute 'ci' missing"
+      },
+      "flake": "github:jjant/nix-config",
+      "generation": 3,
+      "kind": "home-manager",
+      "local": null,
+      "name": "ci",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "eval-failed",
+      "timings": {
+        "evalMs": 3000,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": null,
+      "activated": null,
+      "attr": "darwinConfigurations.mac-m1.system",
+      "booted": null,
+      "cached": true,
+      "current": null,
+      "desired": "/nix/store/dddddddddddddddddddddddddddddddd-darwin-system-26.05.42ea902",
+      "destination": "ssh://devuser1@localhost:2022",
+      "drift": null,
+      "error": {
+        "detail": "ssh -T … sh -s\nssh: connect to host localhost port 2022: Connection refused",
+        "summary": "ssh: connect to host localhost port 2022: Connection refused"
+      },
+      "flake": "github:jjant/nix-config",
+      "generation": null,
+      "kind": "darwin",
+      "local": null,
+      "name": "mac-m1",
+      "note": "reachable only from a desk you ssh into from the Mac",
+      "platform": null,
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "offline",
+      "timings": {
+        "evalMs": null,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": null,
+      "activated": 1779290000,
+      "attr": "homeConfigurations.new-box.activationPackage",
+      "booted": null,
+      "cached": null,
+      "current": "/nix/store/494amg2bizplp1s8485gr6b2k6pl4mxh-home-manager-generation",
+      "desired": null,
+      "destination": "new-box",
+      "drift": null,
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "generation": 1,
+      "kind": "home-manager",
+      "local": null,
+      "name": "new-box",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "pending",
+      "timings": {
+        "evalMs": null,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": null,
+      "activated": null,
+      "attr": "nixosConfigurations.web1.config.system.build.toplevel",
+      "booted": null,
+      "cached": null,
+      "current": null,
+      "desired": null,
+      "destination": "web1",
+      "drift": null,
+      "error": {
+        "detail": "ssh -T … sh -s\nssh: Could not resolve hostname web1: Name or service not known",
+        "summary": "ssh: Could not resolve hostname web1: Name or service not known"
+      },
+      "flake": "github:jjant/nix-config",
+      "generation": null,
+      "kind": "nixos",
+      "local": null,
+      "name": "web1",
+      "note": null,
+      "platform": null,
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "unreachable",
+      "timings": {
+        "evalMs": null,
+        "probeMs": 250
+      }
+    },
+    {
+      "activate": null,
+      "activated": null,
+      "attr": "nixosConfigurations.web2.config.system.build.toplevel",
+      "booted": null,
+      "cached": null,
+      "current": null,
+      "desired": null,
+      "destination": "web2",
+      "drift": null,
+      "error": {
+        "detail": "ssh -T … sh -s\nconnection dropped / timed out after connecting",
+        "summary": "connection dropped / timed out after connecting"
+      },
+      "flake": "github:jjant/nix-config",
+      "generation": null,
+      "kind": "nixos",
+      "local": null,
+      "name": "web2",
+      "note": null,
+      "platform": null,
+      "rebootRequired": false,
+      "revision": null,
+      "specialisation": null,
+      "status": "probe-failed",
+      "timings": {
+        "evalMs": null,
+        "probeMs": 250
+      }
+    }
+  ],
+  "summary": {
+    "offline": 1,
+    "outdated": 2,
+    "pending": 2,
+    "total": 9,
+    "trouble": 3,
+    "upToDate": 1
+  },
+  "version": 1
+}

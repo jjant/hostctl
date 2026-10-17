@@ -1,0 +1,11 @@
+---
+source: src/output.rs
+expression: backward
+---
+bigmem: 702 → 695 paths · 7.3 GiB → 7.0 GiB (-363.6 MiB)
+  atuin                    ε → ∅                                changed
+  atuin-server.service     ε → ∅                                removed
+  hm_tmuxwindownaming      ε → ∅                                removed
+  home-manager                                       -10.8 KiB  resized
+  zenoh                    1.10.0, 1.10.0-fish → ∅  -331.9 MiB  removed
+  zenoh-bridge-remote-api  1.10.1, 1.10.1-fish → ∅   -31.6 MiB  removed

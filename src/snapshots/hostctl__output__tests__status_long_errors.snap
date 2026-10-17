@@ -1,0 +1,12 @@
+---
+source: src/output.rs
+expression: table
+---
+github:jjant/nix-config @ 42ea902 (2h ago)
+
+  al2023-x86_64  ! eval failed  flake 'path:/tmp/hostctl-ifd' does not provide attribute 'packages.x86_64-linux.nope.outPath', 'legacyPackages.x86_64-linux.nope.outPath' or 'nope.outPath'
+  bigmem •       ! eval failed  path '/nix/store/wdfh0jh598v4qshmcs296ri45p0win4b-gen.drv' is not valid
+  web1           ? unreachable  ssh: Could not resolve hostname web1.internal.example.com: Name or service not known (set `destination` for web1)
+
+2 eval failed · 1 unreachable · • this machine · 3.4s
+error: nix.command = "nix" could not be run: No such file or directory (os error 2); is Nix installed and on PATH?

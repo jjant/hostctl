@@ -1,0 +1,11 @@
+---
+source: src/output.rs
+expression: table
+---
+github:jjant/nix-config
+
+  a  … interrupted
+  b  … interrupted
+  c  … interrupted
+
+3 pending

@@ -1,0 +1,13 @@
+---
+source: src/output.rs
+expression: visible_escapes(&colored)
+---
+␛[1mbigmem␛[0m: 695 → 702 paths · 7.0 GiB → 7.3 GiB ␛[31m(+363.6 MiB)␛[0m
+  atuin                ∅ → ε                                changed
+  bash                 5.3p3 → 5.2p37             ␛[32m-1.0 MiB␛[0m  ␛[31mdowngraded␛[0m
+  firefox              131.0 → 132.0              ␛[31m+2.0 MiB␛[0m  ␛[32mupgraded␛[0m
+  hm_tmuxwindownaming  ∅ → ε                                ␛[32madded␛[0m
+  home-manager                                   ␛[31m+10.8 KiB␛[0m  ␛[2mresized␛[0m
+  hosts                0.0.0, 0.0.0-fish → ∅                ␛[31mremoved␛[0m
+  python3              3.12.8, 3.13.1 → 3.13.2   ␛[32m-70.0 MiB␛[0m  changed
+  zenoh                ∅ → 1.10.0, 1.10.0-fish  ␛[31m+331.9 MiB␛[0m  ␛[32madded␛[0m

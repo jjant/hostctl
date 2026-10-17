@@ -1,0 +1,13 @@
+---
+source: src/output.rs
+expression: table
+---
+github:jjant/nix-config @ 42ea902 (2h ago)
+
+  bigmem •  ✓ up to date  gen 9 · 12m ago · the build box
+  lab       ✗ outdated    gen 3 · 1d ago · unknown generation · rack 3, shelf 2
+  mac-m1    – offline     ssh: connect to host localhost port 2022: Connection refused
+  mac-m1    – offline     reachable only from a desk you ssh into from the Mac
+
+1 outdated · 2 offline · 1 up to date · • this machine · 3.4s
+update: hostctl activate lab

@@ -1,0 +1,15 @@
+---
+source: src/output.rs
+expression: table
+---
+github:jjant/nix-config @ 42ea902 (2h ago)
+git+file:///tmp/hostctl-ifd @ a8f62b6-dirty (2h ago)
+sourcehut:~jj/lab · resolving…
+github:jjant/work-config: unable to download 'https://api.github.com/repos/jjant/work-config/commits/HEAD': HTTP error 404
+
+  bigmem     ✓ up to date   gen 9 · 12m ago
+  scratch    ✗ outdated     gen 2 · 5m ago · unknown generation
+  lab        … waiting
+  work-desk  ! eval failed  unable to download 'https://api.github.com/repos/jjant/work-config/commits/HEAD': HTTP error 404
+
+1 eval failed · 1 outdated · 1 pending · 1 up to date

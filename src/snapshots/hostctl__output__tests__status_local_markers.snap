@@ -1,0 +1,11 @@
+---
+source: src/output.rs
+expression: table
+---
+github:jjant/nix-config @ 42ea902 (2h ago)
+
+  bigmem •   ✓ up to date  gen 4 · 1h ago
+  mac-m1 •?  ✓ up to date  gen 4 · 1h ago
+  web1       ✓ up to date  gen 4 · 1h ago
+
+3 up to date · • this machine · •? this machine (assumed) · 3.4s

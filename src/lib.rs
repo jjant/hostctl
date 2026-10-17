@@ -10,6 +10,7 @@ pub mod exec;
 pub mod local;
 pub mod model;
 pub mod nix;
+pub mod output;
 pub mod probe;
 pub mod remote;
 pub mod storepath;
