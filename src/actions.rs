@@ -106,7 +106,7 @@ pub struct Activation {
 /// The activation of `host` at the resolved `flake` towards `desired`, or
 /// why there is none:
 /// - the host has no template (`activate = false`, custom kind);
-/// - it runs on the target over a forced-command route ("<name> only
+/// - it runs on the target over a forced-command route ("`<name>` only
 ///   answers its probe command");
 /// - it runs on a remote target but the flake isn't
 ///   [`FlakeInfo::fetchable_remotely`] ("this flake only exists here: use

@@ -56,7 +56,7 @@ const MAX_ERROR_LINES: usize = 400;
 /// - overlays: help, confirm (title, exact command, where it runs, warning);
 /// - [`crate::tui::app::Mode::Diff`]: a full-screen scrollable diff (summary
 ///   line + one row per change, colored by kind), its spinner, or the
-///   "desired generation missing — b to build on <host>" message.
+///   "desired generation missing — b to build on `<host>`" message.
 ///
 /// Colors only when `app.color` (else bold/reverse/dim only). Works down to
 /// 40×10.
