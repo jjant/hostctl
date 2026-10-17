@@ -45,13 +45,14 @@ revision known from the generation itself — `configurationRevision` — or fro
 hostctl's cache), `same rev, different build` (revision equal, paths differ:
 activated from a flake reference without `rev`, or with overridden inputs),
 `staged` (the profile already points at the desired generation; switch/reboot
-pending), or `unknown generation`. Badges: `⟳ reboot` (NixOS booted
+pending), or `unknown generation` (not built from a revision hostctl has
+checked: a local checkout, another branch). Badges: `⟳ reboot` (NixOS booted
 kernel/initrd/modules differ), `specialisation <name>`.
 
 Exit codes: `0` all up to date (offline optional hosts allowed), `1` some
 outdated / not activated, `2` trouble (unreachable, failed, pending, stale flake,
 global error) — trouble wins, `3` the check couldn't run (usage or config error,
-no host selected, nix/ssh not runnable), `130` interrupted.
+no host selected, nix or ssh can't be run at all), `130` interrupted.
 
 ## Measurements (bigmem, 5 hosts, nix 2.35.3; design review re-measured)
 
@@ -201,12 +202,16 @@ socket is private (`$XDG_RUNTIME_DIR/hostctl/ssh`, else `~/.cache/hostctl/ssh`,
 mode 0700, short hashed names for macOS's 104-byte limit), so an interactive
 `ssh <alias>` never rides hostctl's forwarding-less connection.
 `ssh.persist = "0s"` uses `-o ControlMaster=no -o ControlPersist=no` instead.
-When ssh exits 255 with no message (ControlPersist swallows ProxyCommand errors),
-the probe is retried once without multiplexing to capture the reason; it is also
-retried once on `kex_exchange_identification` / connection resets (sshd
-MaxStartups). At most 10 *new* connections (no live control socket) are opened
-at once. Known failures get hints (unresolvable host, BatchMode auth failure,
-changed host key, `RemoteCommand` in ssh config).
+The private masters use `ServerAliveInterval=5` and `ServerAliveCountMax=2`, so
+a dead connection is noticed in about 10 s; a probe that times out over a
+master is retried once without it. When ssh exits 255 with no message, or with
+just `Connection closed by UNKNOWN port 65535` (ControlPersist hides
+ProxyCommand errors), the probe is retried once without multiplexing to
+capture the real reason; it is also retried once on
+`kex_exchange_identification` / connection resets (sshd MaxStartups). At most
+10 *new* connections (no live control socket) are opened at once. Known
+failures get hints (unresolvable host, BatchMode auth failure, changed host
+key, `RemoteCommand` in ssh config).
 
 Remote commands that need Nix (closure listing, builds, activation) start with a
 **PATH prelude** — `/run/wrappers/bin` prepended (NixOS's setuid `sudo` must win),
@@ -235,9 +240,11 @@ nix … eval --json --read-only --no-eval-cache --no-write-lock-file --option ta
   distinct flake is resolved once, in parallel.
 - `nix.refresh` (default `60s`): a resolution younger than that is reused from
   the cache without calling nix; older ones run with `--refresh`. `--refresh`
-  (CLI) forces it, `--offline` never refreshes and only uses cached results.
+  (CLI) forces it. `--offline` never refreshes and never evaluates: only cached
+  resolutions and results are used (a host without them shows "not cached; run
+  hostctl once without --offline"); hosts are still probed.
 - Metadata stderr is inspected: `; using cached version` / download failures ⇒
-  `FlakeInfo.stale` (header warning, exit 2); `not writing modified lock file` ⇒
+  `FlakeInfo.stale` (header badge, exit 2); `not writing modified lock file` ⇒
   `FlakeInfo.lock_outdated` (warning, results not cached). If resolution fails
   outright, the last good resolution is used, marked stale.
 - `FlakeInfo::fetchable_remotely()` (github/gitlab/sourcehut, git+https/ssh,
@@ -260,8 +267,8 @@ Discovered names are used as ssh destinations only if they look like
 `[user@]host`. A name in several outputs resolves by kind precedence nixos >
 darwin > home-manager (reported by `hostctl hosts`).
 
-Discovery and inventory are one pure eval of the locked flake (0.07 s), cached
-by flake identity.
+Discovery and inventory are one pure eval of the locked flake (0.07 s; pure
+even with `--impure` in `nix.options`), cached by flake identity.
 
 ## Cache (`$XDG_CACHE_HOME/hostctl/cache.json`)
 
@@ -327,7 +334,9 @@ TUI suspends (after cancelling a running check), runs it with inherited stdio
 resumes and re-probes. The confirmation shows the exact command, never cut
 (wrapped; when the box can't grow enough it scrolls, with where it runs kept
 in view), and exactly that string is executed. `y` copies a paste-safe command:
-the bare command for local hosts, `hostctl activate <name>` for remote ones.
+`sh -c '<command>'` when it runs here (templates are POSIX sh; fish or zsh
+would misread them bare), `hostctl activate <name>` for remote hosts — with the
+`-c`/`--flake`/`--self` given, like every command hostctl suggests.
 
 ## Self detection
 
@@ -349,8 +358,9 @@ Search order: `--config` → `$HOSTCTL_CONFIG` → `$XDG_CONFIG_HOME/hostctl/con
 errors; `hostctl config check FILE` validates a file purely (no env, network or
 `$HOME`), which the Nix modules run at build time.
 
-Flake: `--flake` → `HOSTCTL_FLAKE` → `flake` → `.` when `./flake.nix` exists →
-error explaining how to set one.
+Flake: `--flake` → `HOSTCTL_FLAKE` → `flake` → `.` when `./flake.nix` exists
+(with no config file, messages say the flake came from `./flake.nix`) → error
+explaining how to set one. Flakes starting with `-` are rejected.
 
 ```toml
 flake = "github:jjant/nix-config"
@@ -412,43 +422,75 @@ hostctl hosts [PATTERN…]     # resolved hosts, where they come from, how they'
 hostctl config show|path|check [FILE]
 hostctl completions SHELL
 global: -c/--config, -f/--flake, -j/--jobs, --self NAME, --no-cache,
-        --refresh (force re-resolving), --offline (cached only), --color auto|always|never
+        --refresh (force re-resolving), --offline (no refreshes or evaluations; probes run),
+        --color auto|always|never
 ```
 
 Patterns are globs over host names, plus `@local`. A pattern that matches
 nothing is an error (exit 3). `status` on a terminal redraws the plain table in
 place while it fits (else a one-line progress on stderr) and ends with the same
-bytes as `--plain`; the footer lists `update: hostctl activate <outdated…>`.
+bytes as `--plain`, no line cut; in tmux it never floods the scrollback, and
+Ctrl-Z suspends it. The footer lists `update: hostctl activate <outdated…>`
+(with the `-c`/`--flake`/`--self` given).
 
 ## TUI
 
+Mid-check, at 120 columns
+(`src/tui/snapshots/hostctl__tui__view__tests__mixed_120x32.snap`):
+
 ```
- hostctl  github:jjant/nix-config @ 42ea902 · 2h ago                 3 ✓  1 ✗  1 –
- ┌────────────────────────────────────────────────────────────────────────────────┐
- │   HOST            STATUS          GEN  ACTIVATED  DETAIL                         │
- │ ▶ bigmem •        ✗ outdated        9  12m ago    unknown generation             │
- │   al2-aarch64     ✗ outdated       93  4mo ago    on 1a2b3c4 (4mo old)           │
- │   al2-x86_64      ○ not activated                 no home-manager profile        │
- │   al2023-x86_64   ⠋ evaluating 3s                                                │
- │   mac-m1          – offline                       reachable only from a desk …   │
- └────────────────────────────────────────────────────────────────────────────────┘
- ┌ bigmem · home-manager · x86_64-linux · local ──────────────────────────────────┐
- │ current  ykn4vz9v…-home-manager-generation · gen 9 · activated 12m ago          │
- │ desired  wqnds0yy…-home-manager-generation · 42ea902 · cached                   │
- │ timings  probe 12ms · eval 3.4s (cached)                                        │
- │ on bigmem: out=$(nix … build … 'github:…42ea902…'#.homeConfigurations…) && …    │
- └────────────────────────────────────────────────────────────────────────────────┘
-  ↑↓ select  enter/d diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit
+ hostctl  github:jjant/nix-config @ 42ea902 · 2h ago               ⠼ checking 11/12   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 …
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   HOST           KIND          STATUS            GEN  ACTIVATED  DETAIL                                              │
+│ ▶ al2-aarch64    home-manager  ✗ outdated         93  4mo ago    on 1a2b3c4 (4mo old) · graviton desk                │
+│   al2-x86_64     home-manager  ○ not activated                   no home-manager profile                             │
+│   al2023-x86_64  home-manager  ⠼ evaluating 11s   12  3d ago                                                         │
+│   bigmem •       home-manager  ✗ outdated          9  12m ago    unknown generation                                  │
+│   builder        nixos         ! probe failed                    probe output ended early (connection dropped?)      │
+│   desk           nixos         ! eval failed      41  1w ago     path 'wdfh0jh5-gen.drv' is not valid                │
+│   mac-m1         darwin        – offline                         reachable only from a desk you ssh into from the M… │
+│   pi             nixos         ? unreachable                     ssh: Could not resolve hostname pi: Name or servic… │
+│   web1           nixos         ✓ up to date      230  2h ago     ⟳ reboot · specialisation gaming                    │
+│   web2           darwin        ✗ outdated         51  1d ago     staged: switch/reboot pending                       │
+│   web3           nixos         ✗ outdated         77  30m ago    same rev, different build                           │
+│   web4           nixos         ✓ up to date        5  1mo ago                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.dc-west2.example.com ───────────────────────╮
+│ current  aaaaaaaa-home-manager-generation · gen 93 · activated 4mo ago                                               │
+│ desired  bbbbbbbb-home-manager-generation · 42ea902                                                                  │
+│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                                                                   │
+│ compare  https://github.com/jjant/nix-config/compare/1a2b3c4d5e6f...42ea902131b93c04d098d3bcd02f29305b4bad7c         │
+│ note     graviton desk                                                                                               │
+│ activate on al2-aarch64: out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link                │
+│          --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CP │
+│          Wade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ "$out" =  │
+│          /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-home-manager-generation ] && "$out/activate"                    │
+│ timings  probe 25ms · eval 3.4s                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ select  enter diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit
 ```
 
+- Header: the primary flake `@ rev · age`, `· stale` / `· flake.lock out of
+  date`, status counts and, while a check runs, `⠋ checking N/M` (hosts done
+  of all; hosts keep their previous status meanwhile). Why a flake is stale
+  goes on the line under the header, with errors not tied to a host (the
+  latest, `+N more`), and in full in the details of that flake's hosts.
 - Columns HOST · STATUS · GEN · ACTIVATED · DETAIL (+ KIND when wide). When
   narrow, DETAIL truncates first, then KIND, GEN, ACTIVATED go; HOST and STATUS
-  never do. The local host is marked `•`.
-- `d`/Enter opens a full-screen scrollable diff view (`q`/Esc back); when the
-  new generation is in neither this machine's nor the host's store, it says a
-  binary cache may have it and that `b` fetches or builds it (on the host, or
-  here for local hosts and `activate-on = "local"`). `r` is ignored
-  (with a flash) while a check runs. Actions on a busy host are refused.
+  never do. The local host is marked `•`. The selection is `▶` and its HOST
+  cell reversed: no background under the status colors.
+- Confirmations run only on `y` (`n`/Esc cancel; Enter just says so) and show
+  the whole command: the box grows, then scrolls (↑↓) with where it runs kept
+  in view.
+- `d`/Enter opens a full-screen scrollable diff view (`a` activates, `r` diffs
+  again, `y` copies, `q`/Esc back); when the new generation is in neither this
+  machine's nor the host's store, it says a binary cache may have it and that
+  `b` fetches or builds it (on the host, or here for local hosts and
+  `activate-on = "local"`). On the dashboard `r` is ignored (with a flash)
+  while a check runs. Actions on a busy host are refused.
 - `app.rs` is a pure state machine (`on_key → Command`), `view.rs` renders it
   (insta snapshots of `TestBackend` buffers at 40/60/80/120 columns), `mod.rs`
   owns the terminal: the first check starts before terminal setup; the loop
@@ -473,11 +515,12 @@ restored, the cache flushed, exit 130.
 
 ## Security
 
-Discovery/inventory run in pure mode (no `--impure`: a flake can't read the
-caller's environment into host names). Untrusted strings are sanitized
-(`util::sanitize_terminal`) at the boundary. Placeholders are shell-quoted;
-`--` precedes destinations; remote scripts travel on stdin; uploaded activation
-scripts are private temp files.
+Discovery/inventory always run in pure mode, even when `nix.options` has
+`--impure` (a flake can't read the caller's environment into host names).
+Untrusted strings are sanitized (`util::sanitize_terminal`) at the boundary.
+Placeholders are shell-quoted; `--` precedes destinations; flakes starting with
+`-` are rejected; remote scripts travel on stdin; uploaded activation scripts
+are private temp files.
 
 ## Testing
 

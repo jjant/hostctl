@@ -4020,6 +4020,26 @@ mod tests {
     }
 
     #[test]
+    fn the_docs_show_the_dashboard_as_it_is() {
+        let (app, now) = mixed_app();
+        let terminal = render(&app, (120, 32), now);
+        let picture: String = text(terminal.backend().buffer())
+            .iter()
+            .map(|line| format!("{}\n", line.trim_end()))
+            .collect();
+        for (name, doc) in [
+            ("README.md", include_str!("../../README.md")),
+            ("DESIGN.md", include_str!("../../DESIGN.md")),
+        ] {
+            assert!(
+                doc.contains(&picture),
+                "{name}'s dashboard picture is out of date; it is now \
+                 (snapshots/hostctl__tui__view__tests__mixed_120x32.snap):\n{picture}"
+            );
+        }
+    }
+
+    #[test]
     fn snapshot_failed_host_details() {
         snapshots("failed_details", || {
             let (mut app, now) = mixed_app();

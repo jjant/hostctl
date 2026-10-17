@@ -53,7 +53,10 @@ discover = true
 # as the [hosts.<name>] tables below: host settings versioned with the flake,
 # so every machine (and teammate) sees the hosts of the revision being
 # compared. Read when present; "" turns it off. For example, in flake.nix:
-#   lib.hostctl.hosts.mac-m1 = { optional = true; probe = "current-system"; };
+#   lib.hostctl.hosts.mac-m1 = { optional = true; note = "via a desk"; };
+# An inventory can't set `probe` or `ssh-options` (they would run commands on
+# the host or on this machine, and the flake needn't be yours): hostctl
+# ignores them there, with a warning, and takes them only from this file.
 inventory = "lib.hostctl"
 
 # Globs of host names to leave out (installer images, CI-only
@@ -68,14 +71,16 @@ cache = true
 # The nix executable.
 command = "nix"
 # Extra arguments for every nix invocation, e.g. ["--option", "warn-dirty",
-# "false"]. ("--impure" also turns the cache off.)
+# "false"]. ("--impure" also turns the cache off; discovery and the inventory
+# are evaluated purely anyway.)
 options = []
 # Evaluate with --read-only (no .drv files written); a configuration that
 # needs import-from-derivation is retried without it, and remembered.
 read-only = true
 # Reuse a flake's resolution (the revision its branch points at) for this
 # long, then ask again ("0s": on every check). --refresh forces it,
-# --offline never asks. GitHub serves branch heads with this max-age anyway.
+# --offline never asks (nor evaluates: it uses cached results only, and still
+# probes the hosts). GitHub serves branch heads with this max-age anyway.
 refresh = "60s"
 
 [ssh]
@@ -87,7 +92,9 @@ command = "ssh"
 options = []
 # How long hostctl's private ControlMaster connections stay up after a check
 # ("0s": no multiplexing). They make re-probes cost ~20ms, and your own
-# interactive sessions never ride them.
+# interactive sessions never ride them. They send keepalives
+# (ServerAliveInterval=5, ServerAliveCountMax=2), and a probe that times out
+# over one is retried once without it.
 persist = "10m"
 
 [ui]

@@ -30,6 +30,9 @@ rustPlatform.buildRustPackage {
       ../src
       ../tests
       ../examples
+      # The tests check the docs' pictures and examples against the program.
+      ../README.md
+      ../DESIGN.md
     ];
   };
 

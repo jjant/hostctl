@@ -8,24 +8,40 @@ latest revision, asks each host over ssh what it *does* run, and shows the
 difference: in a dashboard on a terminal, as a table or JSON in scripts, and as
 an exit code.
 
+<!-- The dashboard mid-check: src/tui/snapshots/hostctl__tui__view__tests__mixed_120x32.snap -->
 ```text
- hostctl  github:you/nix-config @ 42ea902 · 2h ago                          2 ✓  2 ✗  1 –
- ┌───────────────────────────────────────────────────────────────────────────────────────┐
- │   HOST          STATUS           GEN  ACTIVATED  DETAIL                               │
- │ ▶ desk •        ✗ outdated        59  3d ago     on 1a2b3c4 (3d old)                  │
- │   laptop        – offline                        reachable from the desk only         │
- │   nas           ✓ up to date     112  2h ago                                          │
- │   web1          ✓ up to date      41  2h ago     ⟳ reboot                             │
- │   web2          ⠋ evaluating 3s                                                       │
- │   work          ○ not activated                  no home-manager profile              │
- └───────────────────────────────────────────────────────────────────────────────────────┘
- ┌ desk · nixos · x86_64-linux · local ──────────────────────────────────────────────────┐
- │ current  ykn4vz9v…-nixos-system-desk · gen 59 · activated 3d ago                      │
- │ desired  wqnds0yy…-nixos-system-desk · 42ea902 · cached                               │
- │ timings  probe 12ms · eval 3.4s (cached)                                              │
- │ here: /run/current-system/sw/bin/nixos-rebuild switch --flake 'github:you/nix-con…    │
- └───────────────────────────────────────────────────────────────────────────────────────┘
-  ↑↓ select  enter/d diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit
+ hostctl  github:jjant/nix-config @ 42ea902 · 2h ago               ⠼ checking 11/12   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 …
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   HOST           KIND          STATUS            GEN  ACTIVATED  DETAIL                                              │
+│ ▶ al2-aarch64    home-manager  ✗ outdated         93  4mo ago    on 1a2b3c4 (4mo old) · graviton desk                │
+│   al2-x86_64     home-manager  ○ not activated                   no home-manager profile                             │
+│   al2023-x86_64  home-manager  ⠼ evaluating 11s   12  3d ago                                                         │
+│   bigmem •       home-manager  ✗ outdated          9  12m ago    unknown generation                                  │
+│   builder        nixos         ! probe failed                    probe output ended early (connection dropped?)      │
+│   desk           nixos         ! eval failed      41  1w ago     path 'wdfh0jh5-gen.drv' is not valid                │
+│   mac-m1         darwin        – offline                         reachable only from a desk you ssh into from the M… │
+│   pi             nixos         ? unreachable                     ssh: Could not resolve hostname pi: Name or servic… │
+│   web1           nixos         ✓ up to date      230  2h ago     ⟳ reboot · specialisation gaming                    │
+│   web2           darwin        ✗ outdated         51  1d ago     staged: switch/reboot pending                       │
+│   web3           nixos         ✗ outdated         77  30m ago    same rev, different build                           │
+│   web4           nixos         ✓ up to date        5  1mo ago                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.dc-west2.example.com ───────────────────────╮
+│ current  aaaaaaaa-home-manager-generation · gen 93 · activated 4mo ago                                               │
+│ desired  bbbbbbbb-home-manager-generation · 42ea902                                                                  │
+│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                                                                   │
+│ compare  https://github.com/jjant/nix-config/compare/1a2b3c4d5e6f...42ea902131b93c04d098d3bcd02f29305b4bad7c         │
+│ note     graviton desk                                                                                               │
+│ activate on al2-aarch64: out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link                │
+│          --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CP │
+│          Wade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ "$out" =  │
+│          /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-home-manager-generation ] && "$out/activate"                    │
+│ timings  probe 25ms · eval 3.4s                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ select  enter diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit
 ```
 
 It is not a deployment tool (it happily drives yours) and not a daemon. It runs
@@ -48,12 +64,12 @@ on is recognised by its hostname and checked without ssh. In a script, or with
 $ hostctl status
 github:you/nix-config @ 42ea902 (2h ago)
 
-  desk •       ✗ outdated       gen 59 · 3d ago · on 1a2b3c4 (3d old)
-  laptop       – offline        reachable from the desk only
-  nas          ✓ up to date     gen 112 · 2h ago
-  work         ○ not activated  no home-manager profile
+  desk •  ✗ outdated       gen 59 · 3d ago · on 1a2b3c4 (3d old)
+  laptop  – offline        reachable from the desk only
+  nas     ✓ up to date     gen 112 · 3d ago
+  work    ○ not activated  no home-manager profile
 
-1 up to date · 2 outdated · 1 offline · • this machine · 1.2s
+1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 17ms
 update: hostctl activate desk work
 ```
 
@@ -119,15 +135,17 @@ errors. `hostctl config check FILE` validates a file without reading anything
 else; `hostctl config show` prints the effective configuration.
 
 The flake comes from `--flake`, else `$HOSTCTL_FLAKE`, else `flake`, else `.`
-when `./flake.nix` exists. Durations are written `"500ms"`, `"20s"`, `"10m"`,
-`"1h30m"`, `"2d"` or as a number of seconds.
+when `./flake.nix` exists (with no config file, messages then say the flake
+came from `./flake.nix`). Flakes starting with `-` are rejected. Durations are
+written `"500ms"`, `"20s"`, `"10m"`, `"1h30m"`, `"2d"` or as a number of
+seconds.
 
 ```toml
 flake = "github:you/nix-config"
 exclude = ["*-iso"]
 
 [ssh]
-options = ["-o", "ServerAliveInterval=5"]
+options = ["-o", "StrictHostKeyChecking=yes"]
 
 [defaults]
 destination = "{name}.lan"
@@ -159,21 +177,22 @@ activate-on = "local"
 | `exclude`      | `[]`                     | globs of host names to drop (installer ISOs, CI configurations)                              |
 | `cache`        | `true`                   | reuse the results of unchanged flakes (`--no-cache`)                                         |
 
-| key                   | default | meaning                                                                                       |
-| --------------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `nix.command`         | `"nix"` | the nix executable                                                                            |
-| `nix.options`         | `[]`    | extra arguments for every nix invocation (`--impure` disables the cache)                      |
-| `nix.read-only`       | `true`  | evaluate with `--read-only` first (retried without it on import-from-derivation)              |
-| `nix.refresh`         | `"60s"` | re-resolve a flake's branch when the last resolution is older than this; `0` = on every check |
-| `ssh.command`         | `"ssh"` | the ssh executable                                                                            |
-| `ssh.options`         | `[]`    | extra arguments for every ssh run; they win over hostctl's own                                |
-| `ssh.persist`         | `"10m"` | lifetime of hostctl's private ControlMaster connections; `0` = no multiplexing                |
-| `ui.refresh-interval` | `"0s"`  | dashboard auto-refresh; `0` = manual (`r`); for `github:` flakes, ≥ 60s is advised            |
+| key                   | default | meaning                                                                                        |
+| --------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `nix.command`         | `"nix"` | the nix executable                                                                             |
+| `nix.options`         | `[]`    | extra arguments for every nix invocation (`--impure` disables the cache; discovery stays pure) |
+| `nix.read-only`       | `true`  | evaluate with `--read-only` first (retried without it on import-from-derivation)               |
+| `nix.refresh`         | `"60s"` | re-resolve a flake's branch when the last resolution is older than this; `0` = on every check  |
+| `ssh.command`         | `"ssh"` | the ssh executable                                                                             |
+| `ssh.options`         | `[]`    | extra arguments for every ssh run; they win over hostctl's own                                 |
+| `ssh.persist`         | `"10m"` | lifetime of hostctl's private ControlMaster connections; `0` = no multiplexing                 |
+| `ui.refresh-interval` | `"0s"`  | dashboard auto-refresh; `0` = manual (`r`); for `github:` flakes, ≥ 60s is advised             |
 
 ### Hosts
 
 `[hosts.<name>]` tables (keyed by configuration name), `[defaults]` (applied to
-every host) and inventory entries take these keys:
+every host) and inventory entries take these keys, except that an inventory
+can't set `probe` or `ssh-options` ([Inventory](#inventory)):
 
 | key           | meaning                                                                                                                                             |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -221,6 +240,11 @@ how to reach each host is versioned with the configuration and every machine
 and teammate sees the hosts of the revision being compared. It is read in the
 same pure evaluation as discovery, and cached with the flake's results.
 
+An inventory takes the keys of [`[hosts.<name>]`](#hosts) except `probe` and
+`ssh-options`: those would run commands on the host or on your machine, and
+the flake being checked needn't be yours, so they come only from your config
+(hostctl ignores them in an inventory, with a warning).
+
 If your flake already generates its configurations from a registry of
 machines, generate the inventory from it too:
 
@@ -240,7 +264,6 @@ lib.hostctl.hosts = builtins.mapAttrs (
   if host.os == "darwin" then
     {
       destination = "ssh://you@localhost:2022";
-      probe = "current-system";
       optional = true;
       note = "reachable from a desk you ssh into from the laptop";
     }
@@ -249,9 +272,10 @@ lib.hostctl.hosts = builtins.mapAttrs (
 ) (import ./hosts);
 ```
 
-(With flake-parts, that is `flake.lib.hostctl.hosts`.) `hostctl hosts` shows
-the result: each host, its kind, how it is reached, which layers define it and
-what is evaluated.
+The laptop's `probe = "current-system"` then goes in your config
+([below](#laptop-behind-a-reverse-tunnel)). (With flake-parts, the inventory
+is `flake.lib.hostctl.hosts`.) `hostctl hosts` shows the result: each host,
+its kind, how it is reached, which layers define it and what is evaluated.
 
 ## Statuses
 
@@ -273,14 +297,16 @@ revision it runs, recorded by the generation itself as `configurationRevision`
 or remembered by hostctl from an earlier check), `same rev, different build`
 (activated from a reference without `rev`, or with overridden inputs), `staged`
 (the profile already points at the desired generation; a switch or reboot is
-pending) or `unknown generation`. Badges: `⟳ reboot` (a NixOS host booted
-another kernel, initrd or modules than it runs) and `specialisation <name>`.
+pending) or `unknown generation` (not built from a revision hostctl has
+checked, such as a local checkout or another branch). Badges: `⟳ reboot` (a
+NixOS host booted another kernel, initrd or modules than it runs) and
+`specialisation <name>`.
 
 **Exit codes**: `0` everything is up to date (offline optional hosts allowed);
 `1` some host is outdated or not activated; `2` trouble: a host is unreachable,
 failed or still pending, a flake couldn't be refreshed, or another error — trouble
 wins over outdated; `3` the check couldn't run (usage or config error, no host
-selected, `nix`/`ssh` not runnable); `130` interrupted.
+selected, `nix` or `ssh` can't be run at all); `130` interrupted.
 
 ## Command line
 
@@ -300,14 +326,17 @@ hostctl completions bash|zsh|fish|elvish|powershell
       --self HOST      treat HOST as this machine ($HOSTCTL_SELF)
       --no-cache       don't read or write the result cache
       --refresh        re-resolve flakes now
-      --offline        no network: cached resolutions and results only
+      --offline        never refresh flakes or evaluate: cached results only (hosts are still probed)
       --color WHEN     auto (honours NO_COLOR), always, never
 ```
 
 Patterns are globs over host names (`web*`, `al2-[xa]*`), plus `@local` for
 this machine; a pattern that matches nothing is an error. On a terminal,
-`status` redraws the table in place while it checks and ends with exactly what
-`--plain` prints.
+`status` redraws the table in place while it checks (without flooding tmux's
+scrollback; `Ctrl-Z` suspends it) and ends with exactly what `--plain` prints,
+no line cut. The `update: hostctl activate …` it suggests keeps the
+`-c`/`--flake`/`--self` you passed. With `--offline`, hosts that have no cached
+results show `not cached; run hostctl once without --offline`.
 
 `diff` lists package changes the way `nix store diff-closures` groups them,
 from both closures read on the host. When the desired generation exists
@@ -329,11 +358,12 @@ re-checks the host.
 | `?`             | help                                        |
 | `q` `Ctrl-C`    | quit                                        |
 
-In the diff view `j`/`k`/`PgUp`/`PgDn` scroll, `b` builds a missing desired
-generation and `q`/`Esc` go back; a confirmation shows the whole command
-(`↑`/`↓` scroll it when it doesn't fit) and runs it only on `y` (`n`/`Esc`
-cancel; `Enter` does nothing). `y` copies `sh -c '<command>'`
-for commands that run on this machine and `hostctl activate <name>` for
+In the diff view `j`/`k`/`PgUp`/`PgDn` scroll, `a` activates, `r` diffs again,
+`y` copies, `b` fetches or builds a missing new generation and `q`/`Esc` go
+back; a confirmation shows the whole command (`↑`/`↓` scroll it when it
+doesn't fit) and runs it only on `y` (`n`/`Esc` cancel; `Enter` just says so).
+`y` copies `sh -c '<command>'` for commands that run on this machine and
+`hostctl activate <name>` (with the `-c`/`--flake`/`--self` you passed) for
 remote hosts, so pasting it into any shell does the right thing.
 
 ## JSON
@@ -365,14 +395,14 @@ remote hosts, so pasting it into any shell does the right thing.
       "flake": "github:you/nix-config",
       "attr": "nixosConfigurations.desk.config.system.build.toplevel",
       "status": "outdated",
-      "drift": { "type": "staged" },
+      "drift": { "type": "revision", "rev": "1a2b3c4…", "lastModified": 1791980811, "fromGeneration": false },
       "current": "/nix/store/ykn4vz9v…-nixos-system-desk",
       "desired": "/nix/store/wqnds0yy…-nixos-system-desk",
       "cached": true,
       "generation": 59,
       "activated": 1791980000,
       "platform": "x86_64-linux",
-      "revision": "1a2b3c4…",
+      "revision": null,
       "specialisation": null,
       "booted": "/nix/store/ykn4vz9v…-nixos-system-desk",
       "rebootRequired": false,
@@ -388,10 +418,16 @@ remote hosts, so pasting it into any shell does the right thing.
 
 `summary.outdated` counts outdated and not-activated hosts. `local` is
 `"local"`, `"assumed"` or `null` (remote). `drift` is `null` unless the host
-is outdated; its `type` is `revision` (with the deployed `rev`),
-`same-revision`, `staged` or `unknown`. `error` is `{ "summary", "detail" }`.
-`activated` and `lastModified` are Unix seconds. `hostctl diff --json` prints
-`{ "version": 1, "host", "diff" }` with every change, its versions and sizes.
+is outdated; its `type` is `revision`, `same-revision`, `staged` or `unknown`,
+and a `revision` drift also has the deployed `rev`, its `lastModified` (`null`
+unless hostctl's cache knows it) and `fromGeneration` (`true` when the
+generation records the revision itself, `false` when hostctl's cache
+remembered it). `activate` is `null` when hostctl has no activation for the
+host, else the exact `command` and where it runs, `runsOn`: `"here"` (this
+machine) or `"remote"` (on the host, over ssh). `error` is `{ "summary",
+"detail" }`. `activated` and `lastModified` are Unix seconds. `hostctl diff
+--json` prints `{ "version": 1, "host", "diff" }` with every change, its
+versions and sizes.
 
 ## How it works
 
@@ -429,7 +465,11 @@ What makes it fast:
 - **A result cache** keyed by the Nix implementation and version, `nix.options`
   and the flake's content identity: an unchanged flake costs no evaluation.
 - **A private ssh ControlMaster** (`ssh.persist`): repeated probes cost ~20 ms
-  instead of a new connection, without touching your own ssh multiplexing.
+  instead of a new connection, without touching your own ssh multiplexing. It
+  sends keepalives (`ServerAliveInterval=5`, `ServerAliveCountMax=2`), so a
+  dead connection is noticed in seconds; a probe that times out over it is
+  retried once without it, and so is one whose ProxyCommand failure the master
+  hid (`Connection closed by UNKNOWN port 65535`), to show the real reason.
 
 Measured on a 128-core machine with 5 hosts and Nix 2.35.3:
 
@@ -506,8 +546,10 @@ reference; use `activate = "colmena apply --on {name}"` with
 
 ### Shell prompt
 
-Mark the prompt when this machine is behind. `--offline` uses only cached
-results, so it costs a local probe and no network or evaluation:
+Mark the prompt when this machine is behind. `--offline` never refreshes the
+flake or evaluates, it only uses what earlier runs cached (without that, the
+host shows `not cached; run hostctl once without --offline`), and `@local` is
+probed without ssh, so this costs a local probe and nothing else:
 
 ```sh
 # bash, or zsh with `setopt prompt_subst`
@@ -530,8 +572,9 @@ end
 - hostctl only reads, except for the activations and builds you confirm (or
   pass `--yes` to). It runs `nix`, `ssh`, `sh` and your activation templates,
   nothing else.
-- Discovery and inventory are pure evaluations of the locked flake: a flake
-  can't read your environment into host names or commands.
+- Discovery and inventory are pure evaluations of the locked flake, even with
+  `--impure` in `nix.options`: a flake can't read your environment into host
+  names or commands. An inventory can't set `probe` or `ssh-options`.
 - Unattended ssh runs with `BatchMode=yes`, `ConnectTimeout=10`,
   `ClearAllForwardings=yes`, `ForwardAgent=no`, `ForwardX11=no` and
   `PermitLocalCommand=no`. New host keys are accepted on first contact
@@ -541,9 +584,9 @@ end
   `$XDG_RUNTIME_DIR`, else `~/.cache`), so your interactive `ssh` never rides
   hostctl's forwarding-less connections.
 - Scripts travel on stdin, never on a remote command line; placeholders are
-  shell-quoted; destinations are parsed and passed after `--`, and ones starting
-  with `-` are rejected. Interactive commands are uploaded into a private temp
-  file (`umask 077`, `mktemp`) that deletes itself.
+  shell-quoted; destinations are parsed and passed after `--`; destinations and
+  flakes starting with `-` are rejected. Interactive commands are uploaded into
+  a private temp file (`umask 077`, `mktemp`) that deletes itself.
 - Everything a host or flake says (names, paths, errors) is stripped of
   terminal control sequences before it is displayed.
 - The cache (`$XDG_CACHE_HOME/hostctl/cache.json`) holds store paths and
