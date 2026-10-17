@@ -404,30 +404,25 @@ impl Screen {
         Ok(())
     }
 
-    /// The final screen: the table once more ([`Display::Table`]), the
-    /// progress line gone.
+    /// The final screen: the table once more ([`Display::Table`]), exactly
+    /// as `--plain` prints it — not cut to the terminal's width like the
+    /// frames before it (its long lines wrap) — and the progress line gone.
     fn finish(&mut self, term: &mut impl Term, state: &AppState) -> io::Result<()> {
         self.clear_progress(term);
         let Display::Table(style) = self.display else {
             return Ok(());
         };
         let size = term.out_size();
-        let table =
-            output::status_table(state, style, size.map(|(cols, _)| cols), util::now_unix());
+        let table = output::status_table(state, style, None, util::now_unix());
         let unchanged = self
             .drawn
             .as_ref()
             .is_some_and(|(drawn, at)| *drawn == table && Some(*at) == size);
         if !unchanged {
-            match size.and_then(|size| redraw(self.drawn_rows(size.0), &table, size)) {
-                Some(bytes) => term.out(&bytes)?,
-                None => {
-                    if let Some((cols, _)) = size {
-                        self.erase(term, cols)?;
-                    }
-                    term.out(&table)?;
-                }
+            if let Some((cols, _)) = size {
+                self.erase(term, cols)?;
             }
+            term.out(&table)?;
         }
         self.drawn = None;
         Ok(())
@@ -933,6 +928,20 @@ mod tests {
         text.lines().map(str::to_string).collect()
     }
 
+    /// The rows `text` (narrow characters only) takes on a terminal `cols`
+    /// wide: long lines wrap.
+    fn wrapped(text: &str, cols: usize) -> Vec<String> {
+        text.lines()
+            .flat_map(|line| {
+                let chars: Vec<char> = line.chars().collect();
+                if chars.is_empty() {
+                    return vec![String::new()];
+                }
+                chars.chunks(cols).map(|row| row.iter().collect()).collect()
+            })
+            .collect()
+    }
+
     async fn run(
         term: &mut Fake,
         display: Display,
@@ -1148,7 +1157,7 @@ mod tests {
         let mut vt = Vt::new(80, 24);
         vt.feed("$ hostctl status\n");
         vt.feed(&term.out);
-        let table = output::status_table(&s, PLAIN, Some(80), util::now_unix());
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
         let mut expected = vec!["$ hostctl status".to_string()];
         expected.extend(lines(&table));
         assert_eq!(vt.screen(), expected);
@@ -1156,6 +1165,38 @@ mod tests {
         // It was redrawn along the way, not printed once.
         assert!(term.out.matches("\x1b[J").count() > 3, "{:?}", term.out);
         assert!(table.contains("2 up to date"), "{table}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_final_table_is_not_cut_to_the_terminal() {
+        let names = ["bigmem", "web1-with-a-long-name", "web2-with-a-long-name"];
+        let mut s = state(&names);
+        s.hosts[1].host.note = Some("a note that is longer than the terminal is wide".into());
+        // Every host outdated: the update line names all of them.
+        let mut events = complete_check(&names);
+        for (_, event) in &mut events {
+            if let Event::EvalFinished { result, .. } = event {
+                *result = Ok(desired('c'));
+            }
+        }
+        let mut term = Fake::new(40, 24);
+        run(&mut term, Display::Table(PLAIN), &mut s, events, None).await;
+        let plain = output::status_table(&s, PLAIN, None, util::now_unix());
+        assert!(
+            plain.contains(
+                "update: hostctl activate bigmem web1-with-a-long-name web2-with-a-long-name\n"
+            ),
+            "{plain}"
+        );
+        assert!(plain.lines().any(|l| visible_width(l) > 40), "{plain}");
+        // What stays on the screen is what --plain prints (wrapped), not the
+        // frames cut to 40 columns.
+        assert!(term.out.ends_with(&plain), "{:?}", term.out);
+        let mut vt = Vt::new(40, 24);
+        vt.feed(&term.out);
+        assert_eq!(vt.screen(), wrapped(&plain, 40));
+        // While it ran, frames were cut to fit.
+        assert!(term.out.contains("…"), "{:?}", term.out);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1180,7 +1221,7 @@ mod tests {
         assert_eq!(screen[..3], ["line 1", "line 2", "warning: something"]);
         assert_eq!(
             screen[3..].to_vec(),
-            lines(&output::status_table(&s, PLAIN, Some(60), util::now_unix()))
+            wrapped(&output::status_table(&s, PLAIN, None, util::now_unix()), 60)
         );
     }
 
@@ -1198,7 +1239,7 @@ mod tests {
             None,
         )
         .await;
-        let table = output::status_table(&s, PLAIN, Some(80), util::now_unix());
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
         assert_eq!(term.out, table, "stdout is exactly the table");
         assert!(term.err.starts_with("\r\x1b[K⠋ 0/6"), "{:?}", term.err);
         assert!(term.err.ends_with("\r\x1b[K"), "progress cleared");
@@ -1229,7 +1270,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let table = output::status_table(&s, PLAIN, Some(80), util::now_unix());
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
         assert!(term.out.ends_with(&table));
         let mut vt = Vt::new(80, 24);
         vt.feed(&term.out);
@@ -1286,7 +1327,7 @@ mod tests {
         assert!(s.interrupted);
         assert_eq!(s.exit_code(), 130);
         assert!(!s.is_busy());
-        let table = output::status_table(&s, PLAIN, Some(80), util::now_unix());
+        let table = output::status_table(&s, PLAIN, None, util::now_unix());
         assert!(table.contains("interrupted"), "{table}");
         let mut vt = Vt::new(80, 24);
         vt.feed(&term.out);
@@ -1396,12 +1437,12 @@ mod tests {
             None,
         )
         .await;
-        let table = output::status_table(&s, style, Some(80), util::now_unix());
+        let table = output::status_table(&s, style, None, util::now_unix());
         assert!(table.contains("\x1b[32m"), "{table:?}");
         assert!(term.out.ends_with(&table));
         let mut vt = Vt::new(80, 24);
         vt.feed(&term.out);
-        let plain = output::status_table(&s, PLAIN, Some(80), util::now_unix());
+        let plain = output::status_table(&s, PLAIN, None, util::now_unix());
         assert_eq!(vt.screen(), lines(&plain));
     }
 }
