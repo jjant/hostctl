@@ -1742,8 +1742,9 @@ esac
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let store = std::env::var("HOSTCTL_TEST_NIX_STORE")
-            .unwrap_or_else(|_| format!("local?root={}", tmp.path().join("store").display()));
+        let (store, _turn) = crate::util::test_nix_store();
+        let store =
+            store.unwrap_or_else(|| format!("local?root={}", tmp.path().join("store").display()));
         let cache = tmp.path().join("cache");
         let eval = |expr: &str| {
             let out = Command::new("nix")

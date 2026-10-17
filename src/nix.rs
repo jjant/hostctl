@@ -1807,7 +1807,9 @@ error:
             })
         }
 
-        fn nix_config(test: &str) -> Option<NixConfig> {
+        /// The config for `test`, and the turn on the shared store to hold
+        /// while it runs ([`crate::util::test_nix_store`]).
+        fn nix_config(test: &str) -> Option<(NixConfig, std::sync::MutexGuard<'static, ()>)> {
             if std::env::var("HOSTCTL_TEST_NIX").as_deref() != Ok("1") {
                 eprintln!("skipping {test}: set HOSTCTL_TEST_NIX=1 to run it against nix");
                 return None;
@@ -1818,14 +1820,15 @@ error:
                     return None;
                 }
             }
-            let options = match std::env::var("HOSTCTL_TEST_NIX_STORE") {
-                Ok(store) if !store.is_empty() => vec!["--store".to_string(), store],
-                _ => Vec::new(),
-            };
-            Some(NixConfig {
+            let (store, turn) = crate::util::test_nix_store();
+            let options = store
+                .map(|store| vec!["--store".to_string(), store])
+                .unwrap_or_default();
+            let config = NixConfig {
                 options,
                 ..NixConfig::default()
-            })
+            };
+            Some((config, turn))
         }
 
         struct Run {
@@ -1936,7 +1939,8 @@ error:
 
         #[test]
         fn metadata_and_hosts_leave_the_flake_untouched() {
-            let Some(nix) = nix_config("metadata_and_hosts_leave_the_flake_untouched") else {
+            let Some((nix, _turn)) = nix_config("metadata_and_hosts_leave_the_flake_untouched")
+            else {
                 return;
             };
             let tmp = tempfile::tempdir().unwrap();
@@ -1984,7 +1988,8 @@ error:
 
         #[test]
         fn inventory_paths_are_never_evaluated_as_code() {
-            let Some(nix) = nix_config("inventory_paths_are_never_evaluated_as_code") else {
+            let Some((nix, _turn)) = nix_config("inventory_paths_are_never_evaluated_as_code")
+            else {
                 return;
             };
             let tmp = tempfile::tempdir().unwrap();
@@ -2009,7 +2014,7 @@ error:
 
         #[test]
         fn the_hosts_never_see_the_environment() {
-            let Some(mut nix) = nix_config("the_hosts_never_see_the_environment") else {
+            let Some((mut nix, _turn)) = nix_config("the_hosts_never_see_the_environment") else {
                 return;
             };
             let tmp = tempfile::tempdir().unwrap();
@@ -2028,7 +2033,7 @@ error:
 
         #[test]
         fn evaluates_quoted_attributes() {
-            let Some(nix) = nix_config("evaluates_quoted_attributes") else {
+            let Some((nix, _turn)) = nix_config("evaluates_quoted_attributes") else {
                 return;
             };
             let tmp = tempfile::tempdir().unwrap();

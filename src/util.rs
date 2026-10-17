@@ -507,6 +507,22 @@ pub(crate) fn write_executable(path: &std::path::Path, content: &str) {
     );
 }
 
+/// The store the real-Nix tests use: `$HOSTCTL_TEST_NIX_STORE`, or `None`
+/// (unset or empty) for this machine's. Hold the guard while using it: nix
+/// processes racing on a daemon-less store can fail with "SQLite database …
+/// is busy", so the tests take turns.
+#[cfg(test)]
+pub(crate) fn test_nix_store() -> (Option<String>, std::sync::MutexGuard<'static, ()>) {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let store = std::env::var("HOSTCTL_TEST_NIX_STORE")
+        .ok()
+        .filter(|store| !store.is_empty());
+    let turn = TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    (store, turn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

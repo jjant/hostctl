@@ -2170,9 +2170,7 @@ mod tests {
             eprintln!("nix-store or nix-env not on PATH, skipped");
             return;
         };
-        let store = std::env::var("HOSTCTL_TEST_NIX_STORE")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let (store, _turn) = crate::util::test_nix_store();
         let nix = |program: &Path, args: &[&str]| {
             let mut cmd = Command::new(program);
             if let Some(store) = &store {
