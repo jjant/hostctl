@@ -56,11 +56,13 @@ impl NixConfig {
 
     /// `nix <FEATURES> eval --json --read-only <EVAL_OPTIONS> <options>
     /// '<locked>#.' --apply <hosts_expr(inventory)>`: discovery and
-    /// inventory in one pure evaluation.
+    /// inventory in one pure evaluation — `options` without those that would
+    /// make it impure ([`pure_options`]), so that a flake can't read the
+    /// environment into host names or commands.
     pub fn hosts(&self, locked: &str, inventory: &str) -> CommandSpec {
         self.nix(["eval", "--json", "--read-only"])
             .args(EVAL_OPTIONS)
-            .args(&self.options)
+            .args(pure_options(&self.options))
             .arg(format!("{locked}#."))
             .arg("--apply")
             .arg(hosts_expr(inventory))
@@ -70,6 +72,40 @@ impl NixConfig {
     pub fn version(&self) -> CommandSpec {
         CommandSpec::new(&self.command).arg("--version")
     }
+}
+
+/// `options` without those that turn off pure evaluation: `--impure`,
+/// `--no-pure-eval`, and `--option pure-eval <value>` unless the value is
+/// `true`, `yes` or `1` (a `--option pure-eval` without one too).
+pub fn pure_options(options: &[String]) -> Vec<&str> {
+    let mut kept = Vec::with_capacity(options.len());
+    let mut i = 0;
+    while i < options.len() {
+        let words = match (options[i].as_str(), options.get(i + 1).map(String::as_str)) {
+            ("--impure" | "--no-pure-eval", _) => 1,
+            ("--option", Some("pure-eval")) => {
+                let pure = options
+                    .get(i + 2)
+                    .is_some_and(|value| matches!(value.as_str(), "true" | "yes" | "1"));
+                if pure {
+                    kept.extend(options[i..i + 3].iter().map(String::as_str));
+                }
+                3
+            }
+            (option, _) => {
+                kept.push(option);
+                1
+            }
+        };
+        i += words;
+    }
+    kept
+}
+
+/// Whether `options` turn off pure evaluation, so that results can depend
+/// on the environment (see [`pure_options`]).
+pub fn is_impure(options: &[String]) -> bool {
+    pure_options(options).len() < options.len()
 }
 
 /// The `--apply` function for [`NixConfig::hosts`]: given the flake outputs
@@ -841,6 +877,67 @@ error:
             ])
         );
         assert_eq!((spec.stdin, spec.env), (None, vec![]));
+
+        // Always pure: a flake can't read the environment into its hosts.
+        let words = [
+            "--impure",
+            "-L",
+            "--no-pure-eval",
+            "--option",
+            "pure-eval",
+            "false",
+            "--option",
+            "pure-eval",
+            "true",
+            "--offline",
+            "--option",
+            "pure-eval",
+        ];
+        let impure = with_options(&words);
+        assert_eq!(
+            impure.hosts(LOCKED, "lib.hostctl").args[10..],
+            strings(&[
+                "-L",
+                "--option",
+                "pure-eval",
+                "true",
+                "--offline",
+                &format!("{LOCKED}#."),
+                "--apply",
+                &hosts_expr("lib.hostctl"),
+            ])[..]
+        );
+        // A configuration's evaluation takes the options as they are.
+        let eval = impure.eval_out_path(LOCKED, "x", true);
+        assert_eq!(eval.args[10..eval.args.len() - 1], strings(&words)[..]);
+    }
+
+    #[test]
+    fn impure_options_are_dropped_for_pure_evaluations() {
+        let check = |words: &[&str], pure: &[&str]| {
+            let options = strings(words);
+            assert_eq!(pure_options(&options), pure, "{words:?}");
+            assert_eq!(is_impure(&options), pure.len() < words.len(), "{words:?}");
+        };
+        check(&["--impure"], &[]);
+        check(&["-L", "--impure", "--offline"], &["-L", "--offline"]);
+        check(&["--no-pure-eval", "-L"], &["-L"]);
+        for value in ["false", "0", "no", "False"] {
+            check(&["--option", "pure-eval", value, "-L"], &["-L"]);
+        }
+        check(&["-L", "--option", "pure-eval"], &["-L"]);
+        for pure in [
+            &[][..],
+            &["--option", "pure-eval", "true"],
+            &["--option", "pure-eval", "yes"],
+            &["--option", "pure-eval", "1"],
+            &["--pure-eval"],
+            &["--option", "tarball-ttl", "0"],
+            &["--impure-env"],
+            &["--override-input", "nixpkgs", "path:/x"],
+        ] {
+            check(pure, pure);
+        }
     }
 
     #[test]
@@ -1740,7 +1837,9 @@ error:
         /// Run `spec` with Nix's per-user state inside `home`.
         fn run(spec: &CommandSpec, home: &Path) -> Run {
             let mut cmd = Command::new(&spec.program);
-            cmd.args(&spec.args).stdin(Stdio::null());
+            cmd.args(&spec.args)
+                .envs(spec.env.iter().map(|(key, value)| (key, value)))
+                .stdin(Stdio::null());
             for (var, dir) in [
                 ("XDG_CACHE_HOME", "cache"),
                 ("XDG_CONFIG_HOME", "config"),
@@ -1793,6 +1892,7 @@ error:
     homeConfigurations."u@h" = {{ activationPackage.outPath = "{HM}"; }};
     homeConfigurations."ü^x".activationPackage.outPath = "{HM}2";
     lib.hostctl.hosts.a = {{ destination = "root@a.lan"; note = "x"; }};
+    lib.leaky.hosts.a.note = builtins.getEnv "HOSTCTL_TEST_LEAK";
     lib.readOnlyFails = builtins.readFile (builtins.toFile "x" "y");
   }};
 }}
@@ -1905,6 +2005,25 @@ error:
                 assert!(hosts.inventory.is_empty(), "{inventory:?}");
                 assert_eq!(hosts.discovered.len(), 3, "{inventory:?}");
             }
+        }
+
+        #[test]
+        fn the_hosts_never_see_the_environment() {
+            let Some(mut nix) = nix_config("the_hosts_never_see_the_environment") else {
+                return;
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let flake = git_flake(tmp.path());
+            let info = resolve(&nix, &flake, tmp.path());
+            // Even when the configurations are evaluated impurely.
+            nix.options.push("--impure".into());
+            let spec = nix
+                .hosts(&info.locked, "lib.leaky")
+                .env("HOSTCTL_TEST_LEAK", "leaked");
+            let out = run(&spec, tmp.path());
+            assert!(out.ok, "hosts failed: {}", out.stderr);
+            let hosts = parse_hosts(&out.stdout).unwrap();
+            assert_eq!(hosts.inventory["a"].note.as_deref(), Some(""));
         }
 
         #[test]

@@ -133,8 +133,9 @@ impl Cache {
     /// The key of `info`'s results: a hash (hex) of the full `nix --version`
     /// line, the `nix.options` argv, a non-default store directory
     /// (`NIX_STORE_DIR`) and [`FlakeInfo::identity`]. `None` (→ no caching)
-    /// without an identity or a version, or when `nix_options` contains
-    /// `--impure` (or `--no-pure-eval`, `--option pure-eval false`).
+    /// without an identity or a version, or when `nix_options` make
+    /// evaluation impure ([`crate::nix::is_impure`]: `--impure`,
+    /// `--no-pure-eval`, `--option pure-eval false`).
     pub fn key(nix_version: &str, nix_options: &[String], info: &FlakeInfo) -> Option<String> {
         let store_dir = std::env::var_os("NIX_STORE_DIR").or_else(|| std::env::var_os("NIX_STORE"));
         key_with(nix_version, nix_options, store_dir.as_deref(), info)
@@ -315,7 +316,7 @@ fn key_with(
     info: &FlakeInfo,
 ) -> Option<String> {
     let version = nix_version.trim();
-    if version.is_empty() || is_impure(nix_options) {
+    if version.is_empty() || crate::nix::is_impure(nix_options) {
         return None;
     }
     let identity = info.identity()?;
@@ -337,24 +338,6 @@ fn key_with(
     field(store_dir.map_or(&[][..], OsStr::as_encoded_bytes));
     field(identity.as_bytes());
     Some(format!("{:016x}", crate::util::fnv1a64(&buf)))
-}
-
-/// Whether `options` turn off pure evaluation (results could then depend on
-/// the environment).
-fn is_impure(options: &[String]) -> bool {
-    options
-        .iter()
-        .enumerate()
-        .any(|(i, option)| match option.as_str() {
-            "--impure" | "--no-pure-eval" => true,
-            "--option" => {
-                options.get(i + 1).is_some_and(|name| name == "pure-eval")
-                    && options
-                        .get(i + 2)
-                        .is_none_or(|value| !matches!(value.as_str(), "true" | "yes" | "1"))
-            }
-            _ => false,
-        })
 }
 
 fn hint_key(flake: &str, attr: &str) -> String {
