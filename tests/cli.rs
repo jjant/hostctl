@@ -2043,6 +2043,8 @@ fn a_signal_at_the_press_enter_prompt_leaves_the_terminal_as_it_was() {
     let before = pty.termios();
     let child = pty.spawn(w.command(&["tui"]));
     pty.wait_for("outdated");
+    // The dashboard runs in raw mode, and termios() sees it.
+    assert_eq!(pty.termios().c_lflag & libc::ICANON, 0);
     pty.send(b"a");
     pty.wait_for("Activate web1?");
     pty.send(b"y");

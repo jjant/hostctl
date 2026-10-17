@@ -370,16 +370,15 @@ impl Pty {
         }
     }
 
-    /// The terminal's settings now.
+    /// The terminal's settings now, read through the master: on macOS the
+    /// exit of the session leader revokes the slave.
     pub fn termios(&self) -> libc::termios {
         use std::os::fd::AsRawFd as _;
         // SAFETY: all-zero is a valid termios, which tcgetattr fills in.
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
         // SAFETY: a valid descriptor and a pointer to a live termios.
-        assert_eq!(
-            unsafe { libc::tcgetattr(self.slave.as_raw_fd(), &mut termios) },
-            0
-        );
+        let read = unsafe { libc::tcgetattr(self.master.as_raw_fd(), &mut termios) };
+        assert_eq!(read, 0, "{}", std::io::Error::last_os_error());
         termios
     }
 }
