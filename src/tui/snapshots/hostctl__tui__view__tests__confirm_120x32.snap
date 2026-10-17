@@ -22,7 +22,7 @@ expression: terminal.backend()
 "│ current │                                                                                                  │         │"
 "│ desired │ runs on al2-aarch64 (devhost-devuser1-2c-2b7c5f39.dc-west2.example.com)                          │         │"
 "│ drift   │                                                                                                  │         │"
-"│ compare ╰──────────────────────────────────────────────────────────────────────────────── y run · n cancel ╯         │"
+"│ compare ╰──────────────────────────────────────────────────────────────────────────── y run · n/esc cancel ╯         │"
 "│ note     graviton desk                                                                                               │"
 "│ activate on al2-aarch64: out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link                │"
 "│          --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CP │"

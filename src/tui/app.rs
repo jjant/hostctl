@@ -250,8 +250,9 @@ impl App {
     /// runs); `/` filter; `s` sort; `?` help; `J`/`K` scroll details;
     /// `q`/Ctrl-C quit; Esc clears the filter. Diff view: `j`/`k`/PgUp/PgDn
     /// scroll, `b` asks to build when the desired generation is missing,
-    /// `q`/Esc back. Confirm: `y`/Enter run, `n`/Esc/`q` cancel. Actions on
-    /// a busy host and unavailable actions set a flash explaining why.
+    /// `q`/Esc back. Confirm: only `y` runs (Enter just flashes the keys),
+    /// `n`/Esc/`q` cancel. Actions on a busy host and unavailable actions
+    /// set a flash explaining why.
     ///
     /// Also: Ctrl-C quits from every mode; in the filter prompt, Enter
     /// keeps the filter, Esc drops it, Ctrl-U/Ctrl-W erase and ↑/↓ move;
@@ -277,7 +278,7 @@ impl App {
                 self.mode = Mode::Normal;
                 Command::None
             }
-            Mode::Confirm(_) => self.confirm_key(key),
+            Mode::Confirm(_) => self.confirm_key(key, now),
             Mode::Diff { id, scroll } => self.diff_key(id, scroll, key, now),
         }
     }
@@ -422,12 +423,18 @@ impl App {
         }
     }
 
-    fn confirm_key(&mut self, key: KeyEvent) -> Command {
+    fn confirm_key(&mut self, key: KeyEvent, now: Instant) -> Command {
         if has_chord(key) {
             return Command::None;
         }
         match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => {
+            // Only a deliberate `y` runs it: Enter is what opened the diff
+            // a screen earlier.
+            KeyCode::Enter => {
+                self.flash("y runs it, n or esc cancels", now);
+                Command::None
+            }
+            KeyCode::Char('y') => {
                 let Mode::Confirm(confirm) = std::mem::replace(&mut self.mode, Mode::Normal) else {
                     return Command::None;
                 };
@@ -1764,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_confirms_and_n_esc_q_cancel() {
+    fn only_y_confirms_and_n_esc_q_cancel() {
         let (mut app, now) = mixed_app();
         select(&mut app, "bigmem");
         for cancel in [ch('n'), key(KeyCode::Esc), ch('q')] {
@@ -1782,8 +1789,13 @@ mod tests {
             confirm.command.contains(HM_9),
             "home-manager checks the out path"
         );
+        // Enter opens the diff a screen earlier: here it only says what
+        // the keys are.
+        assert_eq!(app.on_key(key(KeyCode::Enter), now), Command::None);
+        assert!(matches!(app.mode, Mode::Confirm(_)));
+        assert_eq!(app.current_flash(now), Some("y runs it, n or esc cancels"));
         assert!(matches!(
-            app.on_key(key(KeyCode::Enter), now),
+            app.on_key(ch('y'), now),
             Command::Run {
                 id: 3,
                 after: After::Reprobe,

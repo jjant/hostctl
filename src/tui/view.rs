@@ -1822,7 +1822,7 @@ fn draw_confirm(frame: &mut Frame, area: Rect, ctx: &Ctx, confirm: &Confirm) {
         Span::raw(" "),
         Span::styled("y", t.bold()),
         Span::styled(" run · ", t.dim()),
-        Span::styled("n", t.bold()),
+        Span::styled("n/esc", t.bold()),
         Span::styled(" cancel ", t.dim()),
     ])
     .right_aligned();
@@ -3397,7 +3397,16 @@ mod tests {
         let terminal = render(&app, (80, 24), now);
         let lines = text(terminal.backend().buffer());
         assert_eq!(lines[23].trim(), "");
-        assert!(lines.iter().any(|l| l.contains("y run · n cancel")));
+        assert!(lines.iter().any(|l| l.contains(" y run · n/esc cancel ╯")));
+        // Enter doesn't run it, and the footer says what does.
+        app.on_key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter),
+            now,
+        );
+        let terminal = render(&app, (80, 24), now);
+        let lines = text(terminal.backend().buffer());
+        assert_eq!(lines[23].trim(), "y runs it, n or esc cancels");
+        assert!(matches!(app.mode, Mode::Confirm(_)));
         // A flash replaces the hints.
         let (mut app, now) = mixed_app();
         app.on_key(key('s'), now);

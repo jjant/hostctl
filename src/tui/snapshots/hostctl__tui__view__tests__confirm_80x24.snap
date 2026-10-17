@@ -19,7 +19,7 @@ expression: terminal.backend()
 "│ │                                                                          │ │"
 "╰─│ runs on al2-aarch64 (devhost-devuser1-2c-2b7c5f39.dc-west2.example.com)  │─╯"
 "╭ │                                                                          │─╮"
-"│ ╰──────────────────────────────────────────────────────── y run · n cancel ╯ │"
+"│ ╰──────────────────────────────────────────────────── y run · n/esc cancel ╯ │"
 "│ desired  bbbbbbbb-home-manager-generation · 42ea902                          │"
 "│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                           │"
 "│ compare  https://github.com/jjant/nix-config/compare/1a2b3c4d5e6f...42ea9021 │"

@@ -18,7 +18,7 @@ expression: terminal.backend()
 "│ │ runs on al2-aarch64                                  │ │"
 "│ │ (devhost-devuser1-2c-2b7c5f39.dc-west2.example.com)  │ │"
 "│ │                                                      │ │"
-"│ ╰──────────────────────────────────── y run · n cancel ╯ │"
+"│ ╰──────────────────────────────── y run · n/esc cancel ╯ │"
 "│ compare  https://github.com/jjant/nix-config/compare/1a2 │"
 "╰───────────────────────────────────────── 1–5 of 18 · J/K ╯"
 "                                                            "
