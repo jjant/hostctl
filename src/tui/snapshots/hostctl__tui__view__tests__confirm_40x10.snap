@@ -2,7 +2,7 @@
 source: src/tui/view.rs
 expression: terminal.backend()
 ---
-" 4╭ Activate al2-aarch64? ───────────╮⠼ "
+" n╭ Activate al2-aarch64? ───────────╮2 "
 "╭─│ out=$(nix                        │─╮"
 "│ │ --extra-experimental-features    │ │"
 "│ │ 'nix-command flakes' build       │ │"

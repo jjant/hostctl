@@ -2,7 +2,7 @@
 source: src/tui/view.rs
 expression: terminal.backend()
 ---
-" 42ea902           2✓ 4✗ 1○ 2! 1? 1– 1⠼ "
+" nix-config @ 42ea902           ⠼ 11/12 "
 " ! ssh.command "ssh" can't be run: No s…"
 "╭─────────────────────────── by status ╮"
 "│   HOST           STATUS              │"

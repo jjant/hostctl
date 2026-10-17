@@ -2,7 +2,7 @@
 source: src/tui/view.rs
 expression: terminal.backend()
 ---
-" hostctl  github:jjant/nix-config @ 42ea902 · 2h ago                                  2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 ⠼ "
+" hostctl  github:jjant/nix-config @ 42ea902 · 2h ago               ⠼ checking 11/12   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 … "
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────── /zzz · 0 of 12 ╮"
 "│                                                                                                                      │"
 "│                                                  No host matches zzz                                                 │"

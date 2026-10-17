@@ -43,7 +43,8 @@ const DETAILS_MIN: u16 = 5;
 const MAX_ERROR_LINES: usize = 400;
 
 /// The dashboard (DESIGN.md "TUI"):
-/// - header: primary flake `@ rev · age` (stale / lock warnings), counts;
+/// - header: primary flake `@ rev · age` (stale / lock warnings), counts,
+///   and while a check runs its progress (`⠋ checking 3/12`);
 /// - hosts table: HOST (• local, •? assumed) · STATUS (icon + label, or
 ///   spinner + activity + elapsed) · GEN · ACTIVATED · DETAIL (drift,
 ///   reason, note, badges), + KIND when wide; shrink order: DETAIL
@@ -257,27 +258,72 @@ fn split_body(body: Rect, rows: usize, details: bool) -> (Rect, Option<Rect>) {
 }
 
 fn header_line(ctx: &Ctx, width: usize) -> Line<'static> {
-    let mut counts = status_counts(ctx, false);
-    if spans_width(&counts) * 2 > width {
-        counts = status_counts(ctx, true);
-    }
-    let mut right = spans_width(&counts);
-    if right + 12 > width {
-        counts.clear();
-        right = 0;
-    }
-    // " left  …  counts ": at least two spaces before the counts.
-    let room = width.saturating_sub(if right > 0 { right + 4 } else { 2 });
+    let right = header_right(ctx, width);
+    let right_w = spans_width(&right);
+    // " left  …  right ": at least two spaces before the right side.
+    let room = width.saturating_sub(if right_w > 0 { right_w + 4 } else { 2 });
     let left = header_left(ctx, room);
-    let pad = width.saturating_sub(spans_width(&left) + right + 2);
-    let mut spans = Vec::with_capacity(left.len() + counts.len() + 2);
+    let pad = width.saturating_sub(spans_width(&left) + right_w + 2);
+    let mut spans = Vec::with_capacity(left.len() + right.len() + 2);
     spans.push(Span::raw(" "));
     spans.extend(left);
-    if right > 0 {
+    if right_w > 0 {
         spans.push(Span::raw(" ".repeat(pad)));
-        spans.extend(counts);
+        spans.extend(right);
     }
     Line::from(spans)
+}
+
+/// The header's right side: the status counts (compact when they'd take
+/// more than half the line), after the check's progress while one runs —
+/// `⠋ checking 3/12` when the left side keeps the flake's name beside it,
+/// else `⠋ 3/12`. When the revision wouldn't fit on the left, the counts
+/// go first (they are in flux while a check runs), then the progress.
+fn header_right(ctx: &Ctx, width: usize) -> Vec<Span<'static>> {
+    let mut compact = false;
+    let mut counts = status_counts(ctx, false);
+    if spans_width(&counts) * 2 > width {
+        compact = true;
+        counts = status_counts(ctx, true);
+    }
+    let with_counts = |mut spans: Vec<Span<'static>>| {
+        if !spans.is_empty() && !counts.is_empty() {
+            spans.push(Span::raw(if compact { "  " } else { "   " }));
+        }
+        spans.extend(counts.iter().cloned());
+        spans
+    };
+    let long = with_counts(check_progress(ctx, false));
+    let long_w = spans_width(&long);
+    let mut right =
+        if long_w * 2 <= width && width.saturating_sub(long_w + 4) >= header_left_min(ctx) {
+            long
+        } else {
+            with_counts(check_progress(ctx, true))
+        };
+    if spans_width(&right) + 12 > width {
+        right = check_progress(ctx, true);
+    }
+    if spans_width(&right) + 12 > width {
+        right.clear();
+    }
+    right
+}
+
+/// `⠋ checking 3/12` (`⠋ 3/12` when `compact`) while a check runs: the
+/// hosts it is done with, of all.
+fn check_progress(ctx: &Ctx, compact: bool) -> Vec<Span<'static>> {
+    let Some((done, total)) = ctx.app.state.check_progress() else {
+        return Vec::new();
+    };
+    let mut spans = vec![Span::styled(ctx.spinner(), ctx.t.accent())];
+    if !compact {
+        spans.push(Span::styled(" checking", ctx.t.dim()));
+    }
+    if total > 0 {
+        spans.push(Span::raw(format!(" {done}/{total}")));
+    }
+    spans
 }
 
 /// `hostctl  <flake> @ <rev> · <age>` and warnings, shortened to `room`:
@@ -309,6 +355,20 @@ fn header_left(ctx: &Ctx, room: usize) -> Vec<Span<'static>> {
         last = candidate;
     }
     fit(last, room)
+}
+
+/// The room [`header_left`] needs to still name the flake (by its last
+/// path component).
+fn header_left_min(ctx: &Ctx) -> usize {
+    match ctx.app.state.primary_flake() {
+        Some(flake) => spans_width(&flake_spans(
+            ctx,
+            flake,
+            short_flake(&flat(&flake.url)),
+            false,
+        )),
+        None => "hostctl".len(),
+    }
 }
 
 /// `nix-config` for `github:jjant/nix-config`: the last path component,
@@ -373,8 +433,8 @@ fn flake_spans(ctx: &Ctx, flake: &FlakeState, label: &str, with_age: bool) -> Ve
     spans
 }
 
-/// `3 ✓  1 ✗  1 –`: how many hosts have each status (failures share `!`),
-/// a spinner counting the pending ones while work runs.
+/// `3 ✓  1 ✗  1 –`: how many hosts have each status (failures share `!`;
+/// what spins while a check runs is its progress, next to these).
 fn status_counts(ctx: &Ctx, compact: bool) -> Vec<Span<'static>> {
     const ORDER: [Status; 7] = [
         Status::UpToDate,
@@ -396,7 +456,6 @@ fn status_counts(ctx: &Ctx, compact: bool) -> Vec<Span<'static>> {
             counts[i] += 1;
         }
     }
-    let busy = state.is_busy();
     let mut spans = Vec::new();
     for (status, n) in ORDER.into_iter().zip(counts) {
         if n == 0 {
@@ -410,10 +469,7 @@ fn status_counts(ctx: &Ctx, compact: bool) -> Vec<Span<'static>> {
         } else {
             format!("{n} ")
         }));
-        spans.push(match status {
-            Status::Pending if busy => Span::styled(ctx.spinner(), ctx.t.accent()),
-            _ => Span::styled(status.icon(), ctx.t.status(status)),
-        });
+        spans.push(Span::styled(status.icon(), ctx.t.status(status)));
     }
     spans
 }
@@ -2280,7 +2336,7 @@ mod tests {
 
     use super::*;
     use crate::config::Kind;
-    use crate::model::{AppState, ErrorInfo, Event};
+    use crate::model::{AppState, Desired, ErrorInfo, Event};
     use crate::tui::app::testing::*;
 
     const SIZES: [(u16, u16); 4] = [(120, 32), (80, 24), (60, 20), (40, 10)];
@@ -2319,6 +2375,49 @@ mod tests {
     fn mixed_app() -> (App, Instant) {
         let s = mixed();
         let now = s.at(12_000);
+        let mut app = App::new(s.state, false);
+        app.spinner = 4;
+        (app, now)
+    }
+
+    /// The mixed state once its check is over, then 3 s into a second
+    /// check: every host has its answers again (the evaluations from the
+    /// cache) except web4, the last one, still evaluating.
+    fn refreshing_app() -> (App, Instant) {
+        let mut s = mixed();
+        let al2023 = desired(path('d', "home-manager-generation"), false);
+        s.apply(
+            11_000,
+            Event::EvalFinished {
+                id: 2,
+                result: Ok(al2023),
+            },
+        );
+        s.apply(11_000, Event::RunFinished);
+        s.apply(20_000, Event::RunStarted);
+        for id in 0..12 {
+            s.apply(20_000, Event::ProbeStarted(id));
+        }
+        for id in 0..12 {
+            let h = &s.state.hosts[id];
+            let (result, deployed) = (h.probe.get().cloned().unwrap(), h.deployed.clone());
+            let eval = h.eval.get().cloned().unwrap();
+            s.apply(
+                20_050,
+                Event::ProbeFinished {
+                    id,
+                    result,
+                    deployed,
+                },
+            );
+            if id == 11 {
+                s.apply(20_400, Event::EvalStarted(id));
+            } else {
+                let result = eval.map(|d| Desired { cached: true, ..d });
+                s.apply(20_400, Event::EvalFinished { id, result });
+            }
+        }
+        let now = s.at(23_000);
         let mut app = App::new(s.state, false);
         app.spinner = 4;
         (app, now)
@@ -2424,10 +2523,12 @@ mod tests {
         assert_eq!(title.fg, Color::Reset);
         assert!(title.modifier.contains(Modifier::BOLD));
         assert!(cell("42ea902").modifier.contains(Modifier::BOLD));
-        // The header's counts: icons colored, the pending one spinning.
+        // The header's counts: icons colored; the check's progress spins.
         let counts = row_of(buffer, "2 ✓");
         assert_eq!(counts, 0);
         assert_eq!(cell("✓  4").fg, Color::Green);
+        assert_eq!(row_of(buffer, "⠼ checking 11/12"), 0);
+        assert_eq!(cell("⠼ checking").fg, Color::Cyan);
     }
 
     #[test]
@@ -2696,6 +2797,53 @@ mod tests {
     }
 
     #[test]
+    fn the_header_says_a_check_runs_even_when_no_busy_host_is_shown() {
+        let (app, now) = refreshing_app();
+        let terminal = render(&app, (40, 10), now);
+        let lines = text(terminal.backend().buffer());
+        // The rows shown keep their statuses: nothing there spins.
+        assert!(
+            lines[1..].iter().all(|l| !l.contains('⠼')),
+            "{}",
+            lines.join("\n")
+        );
+        assert_eq!(lines[0], " 42ea902     ⠼ 11/12  3✓ 4✗ 1○ 2! 1? 1– ");
+        // (left, right) of the header at `width`, which it fills but for
+        // the last column.
+        let header = |app: &App, width| {
+            let line = line_text(&header_line(&ctx(app, now), width));
+            assert_eq!(line.width(), width - 1, "{line:?}");
+            let (left, right) = line.split_once("     ").expect("a gap");
+            (left.to_string(), right.trim_start().to_string())
+        };
+        let counts = "3 ✓  4 ✗  1 ○  2 !  1 ?  1 –";
+        assert_eq!(
+            header(&app, 120),
+            (
+                " hostctl  github:jjant/nix-config @ 42ea902 · 2h ago".into(),
+                format!("⠼ checking 11/12   {counts}")
+            )
+        );
+        assert_eq!(
+            header(&app, 80),
+            (
+                " github:jjant/nix-config @ 42ea902".into(),
+                format!("⠼ 11/12   {counts}")
+            )
+        );
+        // Once it's over, only the counts.
+        let mut app = app;
+        app.state.apply(Event::RunFinished, now);
+        assert_eq!(
+            header(&app, 80),
+            (
+                " github:jjant/nix-config @ 42ea902 · 2h ago".into(),
+                counts.into()
+            )
+        );
+    }
+
+    #[test]
     fn header_shows_resolution_problems() {
         let mut s = mixed();
         let mut info = flake_info();
@@ -2707,7 +2855,8 @@ mod tests {
                 url: FLAKE.into(),
                 result: Ok(info),
             },
-        );
+        )
+        .apply(11_000, Event::RunFinished);
         let now = s.at(12_000);
         let app = App::new(s.state.clone(), false);
         let header = line_text(&header_line(&ctx(&app, now), 140));

@@ -2,7 +2,7 @@
 source: src/tui/view.rs
 expression: terminal.backend()
 ---
-" hostctl  github:jjant/nix-config ⠹ resolving                                                                       5 ⠹ "
+" hostctl  github:jjant/nix-config ⠹ resolving                                                      ⠹ checking 0/5   5 … "
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
 "│   HOST         KIND          STATUS            GEN  ACTIVATED                                                        │"
 "│ ▶ al2-aarch64  home-manager  ⠹ probing 2s                                                                            │"

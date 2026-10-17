@@ -2,7 +2,7 @@
 source: src/tui/view.rs
 expression: terminal.backend()
 ---
-" 42ea9╭ hostctl keys ────────────╮1– 1⠼ "
+" nix-c╭ hostctl keys ────────────╮11/12 "
 "╭─────│ Hosts                    │─────╮"
 "│   HO│ ↑↓ j k    move           │     │"
 "│ ▶ al│ g G       first / last   │     │"
