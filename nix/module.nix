@@ -125,7 +125,7 @@ in
         }
       '';
       description = ''
-        hostctl's `config.toml` (see <https://github.com/jjant/hostctl#configuration>),
+        hostctl's `config.toml` (see <https://github.com/jjant/hostctl/blob/main/docs/reference.md#configuration>),
         written to {file}`${configPath}` unless empty. Nulls are dropped.
       '';
     };
