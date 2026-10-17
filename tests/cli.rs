@@ -273,6 +273,26 @@ fn config_errors_exit_3() {
 }
 
 #[test]
+fn error_messages_reach_the_terminal_sanitized() {
+    let w = World::new();
+    // The parse error quotes the line, escape sequence and all.
+    w.config("\x1b]0;pwned\x07bogus = 1\n");
+    let run = w.run(&["status"]);
+    run.code(3);
+    assert!(
+        run.stderr.contains("\\u{1b}]0;pwned\\u{7}bogus = 1"),
+        "{run}"
+    );
+    let missing = w.root().join("x\x1b[2J.toml");
+    let run = w.run(&["-c", missing.to_str().unwrap(), "status"]);
+    run.code(3);
+    assert!(run.stderr.contains("x\\u{1b}[2J.toml"), "{run}");
+    for run in [&run, &w.run(&["status"])] {
+        assert!(!run.stderr.contains(['\x1b', '\x07']), "{:?}", run.stderr);
+    }
+}
+
+#[test]
 fn usage_errors_exit_3_and_help_exits_0() {
     let w = World::new();
     let run = w.run(&["--bogus"]);

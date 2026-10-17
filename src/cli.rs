@@ -209,11 +209,22 @@ fn finish(result: Result<u8, Exit>) -> u8 {
     match result {
         Ok(code) => code,
         Err(exit) => {
-            if let Exit::Usage(message) | Exit::Trouble(message) = &exit {
-                eprint(&format!("error: {message}\n"));
+            if let Some(message) = exit_message(&exit) {
+                eprint(&message);
             }
             exit.code()
         }
+    }
+}
+
+/// `error: <why>` for an exit that says why. Sanitized: messages quote
+/// config files, paths and what hosts and flakes said.
+fn exit_message(exit: &Exit) -> Option<String> {
+    match exit {
+        Exit::Usage(message) | Exit::Trouble(message) => {
+            Some(format!("error: {}\n", util::sanitize_terminal(message)))
+        }
+        Exit::Interrupted => None,
     }
 }
 
@@ -1473,6 +1484,20 @@ mod tests {
         assert_eq!(Exit::Usage("bad config".into()).code(), 3);
         assert_eq!(Exit::Trouble("the build failed".into()).code(), 2);
         assert_eq!(finish(Err(Exit::Interrupted)), 130);
+    }
+
+    #[test]
+    fn exit_messages_are_sanitized() {
+        let usage = Exit::Usage("TOML parse error\n2 | \x1b]0;pwned\x07bogus = 1".into());
+        assert_eq!(
+            exit_message(&usage).unwrap(),
+            "error: TOML parse error\n2 | \\u{1b}]0;pwned\\u{7}bogus = 1\n"
+        );
+        assert_eq!(
+            exit_message(&Exit::Trouble("can't diff x\u{9b}2J".into())).unwrap(),
+            "error: can't diff x\\u{9b}2J\n"
+        );
+        assert_eq!(exit_message(&Exit::Interrupted), None);
     }
 
     #[test]
