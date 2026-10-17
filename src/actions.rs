@@ -205,13 +205,23 @@ fn warning(host: &Host, flake: &FlakeInfo) -> Option<String> {
 /// What `y` copies: something that does the right thing in whatever shell
 /// it's pasted into — `sh -c '<command>'` when it runs here (templates are
 /// POSIX sh; fish or zsh with EXTENDED_GLOB would misread them bare), else
-/// `<hostctl> activate <name>` (which re-checks and confirms), where
+/// `<hostctl> activate -- <name>` (which re-checks and confirms), where
 /// `hostctl` is how to run hostctl in this context
 /// ([`crate::model::AppState::command`]).
-pub fn copy_text(host: &Host, activation: &Activation, hostctl: &str) -> String {
-    match activation.runs_on {
+///
+/// Refused (with why) when the text has characters
+/// [`crate::util::sanitize_terminal`] escapes: quoting doesn't stop a
+/// terminal from acting on them when they are pasted.
+pub fn copy_text(host: &Host, activation: &Activation, hostctl: &str) -> Result<String, String> {
+    let text = match activation.runs_on {
         RunsOn::Here => format!("sh -c {}", sh_quote(&activation.command)),
-        RunsOn::Remote => format!("{hostctl} activate {}", sh_quote(&host.name)),
+        RunsOn::Remote => format!("{hostctl} activate -- {}", sh_quote(&host.name)),
+    };
+    match crate::util::sanitize_terminal(&text) {
+        std::borrow::Cow::Borrowed(_) => Ok(text),
+        std::borrow::Cow::Owned(_) => {
+            Err("the command contains terminal control characters".into())
+        }
     }
 }
 
@@ -591,7 +601,7 @@ mod tests {
         );
         assert_eq!(
             copy_text(&bigmem, &activation, "hostctl"),
-            format!("sh -c {}", sh_quote(&activation.command))
+            Ok(format!("sh -c {}", sh_quote(&activation.command)))
         );
     }
 
@@ -609,7 +619,7 @@ mod tests {
         assert_eq!(activation.warning, None);
         assert_eq!(
             copy_text(&web1, &activation, "hostctl"),
-            "hostctl activate web1"
+            Ok("hostctl activate -- web1".into())
         );
 
         let mac = host("mac-m1", Kind::Darwin, ssh("ssh://jj@mac.example.com:2022"));
@@ -670,7 +680,7 @@ mod tests {
             );
             assert_eq!(
                 copy_text(&web1, &activation, "hostctl"),
-                format!("sh -c {}", sh_quote(&activation.command))
+                Ok(format!("sh -c {}", sh_quote(&activation.command)))
             );
         }
         // A forced-command route doesn't matter either: ssh isn't involved.
@@ -868,11 +878,11 @@ mod tests {
         assert!(runs_here(&host));
         assert_eq!(
             copy_text(&host, &activation(RunsOn::Here), "hostctl"),
-            "sh -c 'home-manager switch'"
+            Ok("sh -c 'home-manager switch'".into())
         );
         assert_eq!(
             copy_text(&host, &activation(RunsOn::Remote), "hostctl"),
-            "hostctl activate 'al2 x86'"
+            Ok("hostctl activate -- 'al2 x86'".into())
         );
         // The context hostctl runs in comes along.
         assert_eq!(
@@ -881,7 +891,35 @@ mod tests {
                 &activation(RunsOn::Remote),
                 "hostctl -c /home/jj/hosts.toml --self desk"
             ),
-            "hostctl -c /home/jj/hosts.toml --self desk activate 'al2 x86'"
+            Ok("hostctl -c /home/jj/hosts.toml --self desk activate -- 'al2 x86'".into())
+        );
+    }
+
+    #[test]
+    fn copy_text_refuses_control_characters() {
+        let mut web1 = host("web1", Kind::Nixos, ssh("root@web1"));
+        let remote = activation(&web1, &github(), &desired()).unwrap();
+        // A name that looks like an option stays a name.
+        web1.name = "-rf".into();
+        assert_eq!(
+            copy_text(&web1, &remote, "hostctl"),
+            Ok("hostctl activate -- -rf".into())
+        );
+        // Pasted, these would reach the terminal raw (quotes don't help).
+        web1.name = "web1\x1b]52;c;cm0gLXJmIH4K\x07".into();
+        let refused = copy_text(&web1, &remote, "hostctl").unwrap_err();
+        assert!(refused.contains("control characters"), "{refused}");
+        assert!(!refused.contains('\x1b'), "{refused:?}");
+        let mut bigmem = host("bigmem", Kind::HomeManager, local());
+        bigmem.activate = Some("home-manager switch\x1b[2J".into());
+        let here = activation(&bigmem, &github(), &desired()).unwrap();
+        assert!(copy_text(&bigmem, &here, "hostctl").is_err());
+        // Line breaks and tabs inside quotes paste fine.
+        bigmem.activate = Some("home-manager\tswitch &&\necho done".into());
+        let here = activation(&bigmem, &github(), &desired()).unwrap();
+        assert_eq!(
+            copy_text(&bigmem, &here, "hostctl"),
+            Ok("sh -c 'home-manager\tswitch &&\necho done'".into())
         );
     }
 

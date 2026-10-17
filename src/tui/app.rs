@@ -717,9 +717,11 @@ impl App {
         let Some(h) = self.state.hosts.get(id) else {
             return Command::None;
         };
-        match self.activation(id) {
-            Ok(activation) => {
-                let text = actions::copy_text(&h.host, &activation, &self.state.command);
+        let copied = self
+            .activation(id)
+            .and_then(|activation| actions::copy_text(&h.host, &activation, &self.state.command));
+        match copied {
+            Ok(text) => {
                 self.flash(format!("copied: {text}"), now);
                 Command::Copy(text)
             }
@@ -1980,17 +1982,17 @@ mod tests {
         select(&mut app, "al2-aarch64");
         assert_eq!(
             app.on_key(ch('y'), now),
-            Command::Copy("hostctl activate al2-aarch64".into())
+            Command::Copy("hostctl activate -- al2-aarch64".into())
         );
         assert_eq!(
             app.current_flash(now),
-            Some("copied: hostctl activate al2-aarch64")
+            Some("copied: hostctl activate -- al2-aarch64")
         );
         // With the flags hostctl was started with.
         app.state.command = "hostctl -c /home/jj/hosts.toml".into();
         assert_eq!(
             app.on_key(ch('y'), now),
-            Command::Copy("hostctl -c /home/jj/hosts.toml activate al2-aarch64".into())
+            Command::Copy("hostctl -c /home/jj/hosts.toml activate -- al2-aarch64".into())
         );
         select(&mut app, "bigmem");
         let Command::Copy(text) = app.on_key(ch('y'), now) else {
@@ -2000,7 +2002,7 @@ mod tests {
         assert_eq!(activation.runs_on, RunsOn::Here);
         assert_eq!(
             text,
-            actions::copy_text(&app.state.hosts[3].host, &activation, "hostctl"),
+            actions::copy_text(&app.state.hosts[3].host, &activation, "hostctl").unwrap(),
             "local: the command itself, ready to paste"
         );
         // Copying is allowed on busy hosts but needs an activation.
@@ -2009,6 +2011,14 @@ mod tests {
         assert_eq!(
             app.current_flash(now),
             Some("nothing to copy for desk: its configuration doesn't evaluate")
+        );
+        // Nothing a pasting terminal would act on reaches the clipboard.
+        app.state.hosts[3].host.activate = Some("home-manager switch\x1b]52;c;eA==\x07".into());
+        select(&mut app, "bigmem");
+        assert_eq!(app.on_key(ch('y'), now), Command::None);
+        assert_eq!(
+            app.current_flash(now),
+            Some("nothing to copy for bigmem: the command contains terminal control characters")
         );
     }
 

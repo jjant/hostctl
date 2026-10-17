@@ -395,11 +395,18 @@ fn footer<'a>(state: &'a AppState, rows: &[Row<'_>]) -> Vec<Line<'a>> {
     }
 
     let mut names = String::new();
+    let mut option_like = false;
     for (h, row) in state.hosts.iter().zip(rows) {
         if row.status.needs_activation() && activation(state, h).is_some() {
+            let name = one_line(&h.host.name);
+            option_like |= name.starts_with('-');
             names.push(' ');
-            names.push_str(&sh_quote(&one_line(&h.host.name)));
+            names.push_str(&sh_quote(&name));
         }
+    }
+    // A name that looks like an option (`-x`) is still a name.
+    if option_like {
+        names.insert_str(0, " --");
     }
     if !names.is_empty() {
         let mut line = Line::default();
@@ -2099,6 +2106,12 @@ update: hostctl activate al2-aarch64 al2-x86_64
             "update: hostctl -c '/home/jj/my hosts.toml' -f github:jj/nix activate al2-aarch64 \
              'it'\\''s a box'"
         );
+        // A name that looks like an option doesn't pass for one.
+        sim.state.command = "hostctl".into();
+        sim.state.hosts[0].host.name = "-x".into();
+        let table = sim.table(NO_COLOR, None);
+        let update = table.lines().find(|l| l.starts_with("update:")).unwrap();
+        assert_eq!(update, "update: hostctl activate -- -x 'it'\\''s a box'");
     }
 
     #[test]
