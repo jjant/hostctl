@@ -135,12 +135,13 @@ fn link(target: impl AsRef<Path>, link: impl AsRef<Path>) {
 
 /// A private directory: under `/tmp` when possible, which keeps control
 /// socket paths short enough for macOS (`$TMPDIR` is long there), else
-/// under `$TMPDIR`.
+/// under `$TMPDIR`. Its path has no symlinks (macOS's `/tmp` is one), so it
+/// is the path hostctl sees as its working directory.
 pub fn tempdir() -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix("h")
-        .tempdir_in("/tmp")
-        .or_else(|_| tempfile::Builder::new().prefix("h").tempdir())
+    [PathBuf::from("/tmp"), std::env::temp_dir()]
+        .iter()
+        .filter_map(|parent| fs::canonicalize(parent).ok())
+        .find_map(|parent| tempfile::Builder::new().prefix("h").tempdir_in(parent).ok())
         .expect("a temporary directory")
 }
 
