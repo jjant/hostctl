@@ -51,6 +51,9 @@ pub struct Confirm {
     pub after: After,
     /// Return to the diff view (instead of the table) when dismissed.
     pub from_diff: bool,
+    /// The first line shown of a command too long for its box (which
+    /// shows all of it, scrolled).
+    pub scroll: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +108,12 @@ pub(super) struct Geometry {
     pub(super) diff_max: AtomicU16,
     /// Largest useful details scroll ([`UNKNOWN`] before the first frame).
     pub(super) detail_max: AtomicU16,
+    /// Lines of its command a confirmation shows at once (0 before the
+    /// first frame).
+    pub(super) confirm_rows: AtomicU16,
+    /// Largest useful confirmation scroll, 0 when it all fits
+    /// ([`UNKNOWN`] before the first frame).
+    pub(super) confirm_max: AtomicU16,
 }
 
 impl Default for Geometry {
@@ -115,6 +124,8 @@ impl Default for Geometry {
             diff_rows: AtomicU16::new(0),
             diff_max: AtomicU16::new(UNKNOWN),
             detail_max: AtomicU16::new(UNKNOWN),
+            confirm_rows: AtomicU16::new(0),
+            confirm_max: AtomicU16::new(UNKNOWN),
         }
     }
 }
@@ -251,7 +262,8 @@ impl App {
     /// `q`/Ctrl-C quit; Esc clears the filter. Diff view: `j`/`k`/PgUp/PgDn
     /// scroll, `b` asks to build when the desired generation is missing,
     /// `q`/Esc back. Confirm: only `y` runs (Enter just flashes the keys),
-    /// `n`/Esc/`q` cancel. Actions on a busy host and unavailable actions
+    /// `n`/Esc/`q` cancel, the diff view's scrolling keys scroll a command
+    /// too long for its box. Actions on a busy host and unavailable actions
     /// set a flash explaining why.
     ///
     /// Also: Ctrl-C quits from every mode; in the filter prompt, Enter
@@ -465,8 +477,31 @@ impl App {
                 }
                 Command::None
             }
-            _ => Command::None,
+            _ => {
+                self.scroll_confirm(key);
+                Command::None
+            }
         }
+    }
+
+    /// The diff view's scrolling keys, for a command too long for its
+    /// confirmation box.
+    fn scroll_confirm(&mut self, key: KeyEvent) {
+        let page = i32::from(page(self.geometry.confirm_rows.load(Ordering::Relaxed)));
+        let max = self.geometry.confirm_max.load(Ordering::Relaxed);
+        let Mode::Confirm(confirm) = &mut self.mode else {
+            return;
+        };
+        let scroll = confirm.scroll;
+        confirm.scroll = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => step(scroll, 1, max),
+            KeyCode::Char('k') | KeyCode::Up => step(scroll, -1, max),
+            KeyCode::PageDown | KeyCode::Char(' ') => step(scroll, page, max),
+            KeyCode::PageUp => step(scroll, -page, max),
+            KeyCode::Char('g') | KeyCode::Home => 0,
+            KeyCode::Char('G') | KeyCode::End => max,
+            _ => scroll,
+        };
     }
 
     fn diff_key(&mut self, id: HostId, scroll: u16, key: KeyEvent, now: Instant) -> Command {
@@ -613,6 +648,7 @@ impl App {
                     warning: join_warnings(activation.warning, up_to_date),
                     after: After::Reprobe,
                     from_diff: from_diff.is_some(),
+                    scroll: 0,
                 }
             }
             Err(why) => {
@@ -668,6 +704,7 @@ impl App {
             warning: None,
             after: After::Rediff,
             from_diff: true,
+            scroll: 0,
         });
     }
 
@@ -1802,6 +1839,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_confirmation_too_long_for_its_box_scrolls() {
+        let (mut app, now) = mixed_app();
+        select(&mut app, "al2-aarch64");
+        app.on_key(ch('a'), now);
+        let scroll = |app: &App| match &app.mode {
+            Mode::Confirm(confirm) => confirm.scroll,
+            other => panic!("left the confirmation: {other:?}"),
+        };
+        assert_eq!(scroll(&app), 0);
+        // What the box measured: 3 of the command's lines at a time, 4 more.
+        app.geometry().confirm_rows.store(3, Ordering::Relaxed);
+        app.geometry().confirm_max.store(4, Ordering::Relaxed);
+        for (k, want) in [
+            (ch('j'), 1),
+            (key(KeyCode::Down), 2),
+            (key(KeyCode::End), 4),
+            (ch('j'), 4),
+            (ch('k'), 3),
+            (key(KeyCode::PageUp), 0),
+            (ch(' '), 3),
+            (key(KeyCode::Home), 0),
+            (key(KeyCode::PageDown), 3),
+            (key(KeyCode::Up), 2),
+            (ch('G'), 4),
+            (ch('g'), 0),
+        ] {
+            assert_eq!(app.on_key(k, now), Command::None, "{k:?}");
+            assert_eq!(scroll(&app), want, "{k:?}");
+        }
+        assert!(matches!(
+            app.on_key(ch('y'), now),
+            Command::Run { id: 0, .. }
+        ));
+        // A new confirmation starts at the top.
+        app.on_key(ch('a'), now);
+        assert_eq!(scroll(&app), 0);
     }
 
     #[test]

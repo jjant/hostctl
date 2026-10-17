@@ -56,7 +56,8 @@ const MAX_ERROR_LINES: usize = 400;
 ///   cached), drift and compare URL, timings, the activation labelled
 ///   `here:` / `on <host>:`, errors (full detail, scrollable);
 /// - footer: key hints, or the flash, or the filter prompt;
-/// - overlays: help, confirm (title, exact command, where it runs, warning);
+/// - overlays: help, confirm (title, the exact command — whole, scrolled
+///   when the screen is too short —, where it runs, warning);
 /// - [`crate::tui::app::Mode::Diff`]: a full-screen scrollable diff (summary
 ///   line + one row per change, colored by kind), its spinner, or the
 ///   "desired generation missing — b to build on `<host>`" message.
@@ -1779,36 +1780,54 @@ fn draw_confirm(frame: &mut Frame, area: Rect, ctx: &Ctx, confirm: &Confirm) {
             &mut tail,
         );
     }
-    // Blank lines go first when space is short, then the command's end.
+    // What runs is never cut: the box grows to the screen's height, losing
+    // its blank lines first; past that the command scrolls above where it
+    // runs (or with it, when that would leave the command under 3 rows).
     let room = usize::from(area.height.saturating_sub(2));
-    let blanks = room >= command.len() + tail.len() + 3;
-    let gap = room > command.len() + tail.len();
-    let fixed = tail.len() + usize::from(gap) + 2 * usize::from(blanks);
-    if command.len() + fixed > room {
-        command.truncate(room.saturating_sub(fixed).max(1));
-        if let Some(last) = command.last_mut() {
-            let spans = std::mem::take(&mut last.spans);
-            last.spans = if spans_width(&spans) + 2 <= inner_w {
-                let mut spans = spans;
-                spans.push(Span::styled(" …", t.dim()));
-                spans
-            } else {
-                fit(spans, inner_w.saturating_sub(1))
-            };
+    let (needed, pinned) = (command.len() + tail.len(), tail.len());
+    let geometry = ctx.app.geometry();
+    let mut position = None;
+    let lines = if needed <= room {
+        geometry.confirm_rows.store(0, Relaxed);
+        geometry.confirm_max.store(0, Relaxed);
+        let blanks = room >= needed + 3;
+        let gap = room > needed;
+        let mut lines = Vec::with_capacity(needed + 3);
+        if blanks {
+            lines.push(Line::raw(""));
         }
-    }
-    let mut lines = Vec::with_capacity(command.len() + tail.len() + 3);
-    if blanks {
-        lines.push(Line::raw(""));
-    }
-    lines.extend(command);
-    if gap {
-        lines.push(Line::raw(""));
-    }
-    lines.extend(tail);
-    if blanks {
-        lines.push(Line::raw(""));
-    }
+        lines.extend(command);
+        if gap {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(tail);
+        if blanks {
+            lines.push(Line::raw(""));
+        }
+        lines
+    } else {
+        let (body, pinned) = if room >= pinned + 3 {
+            (command, tail)
+        } else {
+            command.extend(tail);
+            (command, Vec::new())
+        };
+        let rows = room - pinned.len();
+        let max = body.len().saturating_sub(rows);
+        let scroll = usize::from(confirm.scroll).min(max);
+        let to_u16 = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        geometry.confirm_rows.store(to_u16(rows), Relaxed);
+        geometry.confirm_max.store(to_u16(max), Relaxed);
+        if rows > 0 {
+            let at =
+                |first: usize| format!(" {}–{} of {} · ↑↓ ", first + 1, first + rows, body.len());
+            // The last position is the widest: the form fits for all.
+            position = Some((at(scroll), at(max).width()));
+        }
+        let mut lines: Vec<Line> = body.into_iter().skip(scroll).take(rows).collect();
+        lines.extend(pinned);
+        lines
+    };
     let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
     let rect = centered(area, width, height);
     let title = title(
@@ -1826,7 +1845,18 @@ fn draw_confirm(frame: &mut Frame, area: Rect, ctx: &Ctx, confirm: &Confirm) {
         Span::styled(" cancel ", t.dim()),
     ])
     .right_aligned();
-    let block = overlay(t).title_top(title).title_bottom(keys);
+    // Where a scrolled command is (or just that it scrolls), left of the
+    // keys.
+    let room = usize::from(rect.width.saturating_sub(2)).saturating_sub(keys.width() + 1);
+    let position = match position {
+        Some((at, widest)) if widest <= room => Some(at),
+        Some(_) if room >= 4 => Some(" ↑↓ ".to_string()),
+        _ => None,
+    };
+    let mut block = overlay(t).title_top(title).title_bottom(keys);
+    if let Some(position) = position {
+        block = block.title_bottom(Line::from(Span::styled(position, t.dim())).left_aligned());
+    }
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
@@ -2830,6 +2860,76 @@ mod tests {
                 render(&app, size, now);
             }
         }
+    }
+
+    /// The rows inside the confirmation box (between its borders and
+    /// padding), and its bottom border.
+    fn confirm_box(buffer: &Buffer) -> (Vec<String>, String) {
+        let (x0, y0) = find(buffer, "╭ Activate").expect("the box");
+        let x1 = (x0 + 1..buffer.area.width)
+            .find(|&x| buffer[(x, y0)].symbol() == "╮")
+            .expect("its corner");
+        let y1 = (y0 + 1..buffer.area.height)
+            .find(|&y| buffer[(x0, y)].symbol() == "╰")
+            .expect("its bottom");
+        let row = |y: u16, from: u16, to: u16| -> String {
+            (from..to).map(|x| buffer[(x, y)].symbol()).collect()
+        };
+        let rows = (y0 + 1..y1).map(|y| row(y, x0 + 2, x1 - 1)).collect();
+        (rows, row(y1, x0, x1 + 1))
+    }
+
+    #[test]
+    fn the_confirmation_shows_the_whole_command() {
+        for size in [(40, 10), (40, 6), (50, 12), (60, 20), (80, 24), (120, 32)] {
+            let (mut app, now) = mixed_app();
+            app.select(id_of(&app, "al2-aarch64"));
+            app.on_key(key('a'), now);
+            let Mode::Confirm(confirm) = app.mode.clone() else {
+                panic!("expected a confirmation");
+            };
+            render(&app, size, now);
+            let max = app.geometry().confirm_max.load(Relaxed);
+            // Scrolled one row at a time, the first row is the next line;
+            // at the end every row is.
+            let mut seen = String::new();
+            for scroll in 0..=max {
+                if let Mode::Confirm(c) = &mut app.mode {
+                    c.scroll = scroll;
+                }
+                let terminal = render(&app, size, now);
+                let (rows, bottom) = confirm_box(terminal.backend().buffer());
+                assert!(!rows.iter().any(|r| r.contains('…')), "{size:?}: {rows:?}");
+                if scroll < max {
+                    seen.push_str(&rows[0]);
+                    assert!(bottom.contains(" ↑↓ "), "{size:?}: {bottom:?}");
+                } else {
+                    seen.push_str(&rows.concat());
+                }
+            }
+            assert!(
+                seen.replace(' ', "")
+                    .contains(&confirm.command.replace(' ', "")),
+                "{size:?}: {seen:?}"
+            );
+        }
+        // Where it is, when there's room for that; where it runs stays.
+        let (mut app, now) = mixed_app();
+        app.select(id_of(&app, "al2-aarch64"));
+        app.on_key(key('a'), now);
+        let terminal = render(&app, (120, 6), now);
+        let (rows, bottom) = confirm_box(terminal.backend().buffer());
+        assert!(rows[0].starts_with("out=$(nix "), "{rows:?}");
+        assert!(rows[3].starts_with("runs on al2-aarch64 "), "{rows:?}");
+        assert!(bottom.starts_with("╰ 1–3 of 4 · ↑↓ ─"), "{bottom:?}");
+        app.on_key(key('G'), now);
+        let terminal = render(&app, (120, 6), now);
+        let (rows, bottom) = confirm_box(terminal.backend().buffer());
+        assert!(
+            rows[2].trim_end().ends_with("\"$out/activate\""),
+            "{rows:?}"
+        );
+        assert!(bottom.starts_with("╰ 2–4 of 4 · ↑↓ ─"), "{bottom:?}");
     }
 
     #[test]

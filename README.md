@@ -330,8 +330,9 @@ re-checks the host.
 | `q` `Ctrl-C`    | quit                                        |
 
 In the diff view `j`/`k`/`PgUp`/`PgDn` scroll, `b` builds a missing desired
-generation and `q`/`Esc` go back; a confirmation runs its command only on
-`y` (`n`/`Esc` cancel; `Enter` does nothing). `y` copies `sh -c '<command>'`
+generation and `q`/`Esc` go back; a confirmation shows the whole command
+(`↑`/`↓` scroll it when it doesn't fit) and runs it only on `y` (`n`/`Esc`
+cancel; `Enter` does nothing). `y` copies `sh -c '<command>'`
 for commands that run on this machine and `hostctl activate <name>` for
 remote hosts, so pasting it into any shell does the right thing.
 

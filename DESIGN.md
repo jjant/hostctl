@@ -324,8 +324,9 @@ file (`umask 077; mktemp`), then run with `ssh -t … sh <path>` (the script
 deletes itself). The
 TUI suspends (after cancelling a running check), runs it with inherited stdio
 (hostctl ignores SIGINT/SIGQUIT meanwhile, like system(3)), waits for Enter,
-resumes and re-probes. The confirmation shows the exact command and where it
-runs, and exactly that string is executed. `y` copies a paste-safe command:
+resumes and re-probes. The confirmation shows the exact command, never cut
+(wrapped; when the box can't grow enough it scrolls, with where it runs kept
+in view), and exactly that string is executed. `y` copies a paste-safe command:
 the bare command for local hosts, `hostctl activate <name>` for remote ones.
 
 ## Self detection
