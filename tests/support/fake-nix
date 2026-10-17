@@ -17,7 +17,8 @@
 # `_`. Next to an answer file X, all optional: X.delay (seconds to wait
 # first), X.await (wait until that many evaluations have started, or for
 # metadata.json that many ssh calls: a rendezvous only concurrent callers
-# pass quickly; 10 s at most), X.stderr, X.exit.
+# pass quickly; 10 s at most), X.stderr, X.exit, X.ignore-sigterm (only
+# SIGKILL stops the call; X.ignoring-sigterm appears once that holds).
 #
 # Every call appends "start <pid> nix <args…>" to $HOSTCTL_FAKE/log, and
 # "end <pid> <exit code>" unless it is killed. Appends are atomic, so the
@@ -33,6 +34,11 @@ key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 # Replay the answer in file $1; with $2, X.await waits for that many log
 # lines matching it (10 s at most).
 replay() {
+  # Inherited by what it runs (the sleeps) too.
+  if [ -f "$1.ignore-sigterm" ]; then
+    trap '' TERM
+    : >"$1.ignoring-sigterm"
+  fi
   if [ -f "$1.await" ] && [ -n "${2:-}" ]; then
     i=0
     while [ "$(grep -c -- "$2" "$F/log")" -lt "$(cat "$1.await")" ] && [ "$i" -lt 200 ]; do

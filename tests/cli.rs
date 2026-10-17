@@ -510,6 +510,53 @@ fn an_interrupted_check_exits_130() {
     assert_eq!(eval.end, None, "the evaluation was killed: {}", w.log());
 }
 
+#[test]
+fn an_interrupted_check_leaves_no_process_behind() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    // Only SIGKILL stops it, which comes 200 ms after the SIGTERM: later
+    // than hostctl would be gone if it didn't wait.
+    let answer = w.eval(&hm_attr("web1"), &hm('a'));
+    answer.delay(30.0).ignore_sigterm();
+
+    let child = w.command(&["status", "--plain"]).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !answer.ignoring_sigterm() {
+        assert!(
+            Instant::now() < deadline,
+            "no evaluation started: {}",
+            w.log()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let log = w.log();
+    let eval: libc::pid_t = log
+        .lines()
+        .find(|line| line.contains(" eval --raw "))
+        .and_then(|line| line.split(' ').nth(1)?.parse().ok())
+        .unwrap_or_else(|| panic!("no evaluation in the log: {log}"));
+    // SAFETY: a plain syscall; the child leads its own process group.
+    unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) };
+    finish(child).code(130);
+    // The evaluation leads its own process group: none of it is left.
+    let gone = || {
+        // SAFETY: signal 0 only asks whether the group has any process.
+        unsafe { libc::killpg(eval, 0) != 0 }
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !gone() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let survived = !gone();
+    if survived {
+        // SAFETY: as above; nothing may outlive the test either.
+        unsafe { libc::killpg(eval, libc::SIGKILL) };
+    }
+    assert!(!survived, "the evaluation outlived hostctl:\n{}", w.log());
+}
+
 // ─── JSON ───────────────────────────────────────────────────────────────
 
 /// The keys every host of `status --json` has, null or not (sorted).

@@ -168,7 +168,12 @@ pub fn main() -> ExitCode {
             return ExitCode::from(clap_exit_code(&e));
         }
     };
-    ExitCode::from(finish(run(cli)))
+    let code = finish(run(cli));
+    // Every way out (a finished check, Ctrl-C, quitting the dashboard)
+    // comes here: what was killed on the way gets its SIGKILL before
+    // hostctl is gone.
+    crate::exec::finish_kills();
+    ExitCode::from(code)
 }
 
 /// `--help` and `--version` succeed; whatever else clap rejects is a usage

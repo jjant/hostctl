@@ -636,6 +636,19 @@ impl Answer {
     pub fn read_only_fails(&self) -> &Self {
         self.sibling(".readonly-fails", "")
     }
+
+    /// The call (and what it runs) ignores SIGTERM: only SIGKILL stops it.
+    pub fn ignore_sigterm(&self) -> &Self {
+        self.sibling(".ignore-sigterm", "")
+    }
+
+    /// Whether a call with [`Answer::ignore_sigterm`] got as far as
+    /// ignoring it.
+    pub fn ignoring_sigterm(&self) -> bool {
+        let mut name = self.0.file_name().unwrap().to_os_string();
+        name.push(".ignoring-sigterm");
+        self.0.with_file_name(name).exists()
+    }
 }
 
 /// A fake host (see tests/support/fake-ssh).

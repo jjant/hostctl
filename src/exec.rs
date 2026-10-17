@@ -4,7 +4,7 @@
 use std::io;
 use std::pin::pin;
 use std::process::{ExitStatus, Stdio};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
 use libc::c_int;
@@ -57,9 +57,10 @@ impl Output {
 /// - stdout/stderr are captured up to `spec.max_output` bytes each (more is
 ///   read and discarded; `truncated` set);
 /// - on `timeout`, and when the future is dropped, the whole process group
-///   gets SIGTERM, then SIGKILL after 200 ms; after a kill, pipes are drained
-///   for at most 100 ms (grandchildren may hold them open) and whatever was
-///   read is returned with `timed_out = true`;
+///   gets SIGTERM, then SIGKILL after 200 ms (for a dropped run, from a
+///   helper thread: call [`finish_kills`] before exiting); after a kill,
+///   pipes are drained for at most 100 ms (grandchildren may hold them
+///   open) and whatever was read is returned with `timed_out = true`;
 /// - when the child exits by itself, pipes are drained for at most 100 ms
 ///   too, and descendants it left running are left alone (a ControlPersist
 ///   master's ProxyCommand is that master's transport);
@@ -251,29 +252,82 @@ fn killpg(pgid: libc::pid_t, signal: c_int) -> bool {
     unsafe { libc::killpg(pgid, signal) == 0 }
 }
 
+/// Process groups that got SIGTERM from a dropped run, and when their
+/// SIGKILL is due ([`kill_later`], [`finish_kills`]).
+static PENDING_KILLS: Mutex<Vec<(std::time::Instant, libc::pid_t)>> = Mutex::new(Vec::new());
+
+fn pending_kills() -> MutexGuard<'static, Vec<(std::time::Instant, libc::pid_t)>> {
+    PENDING_KILLS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// SIGKILL `pgid` after [`KILL_GRACE`], from a helper thread, since a
-/// dropped run can't wait. Every deadline is "now + grace", so they arrive
-/// in order and a FIFO is all the scheduling needed.
+/// dropped run can't wait (or from [`finish_kills`], should hostctl be
+/// exiting sooner). Every deadline is "now + grace", so they arrive in
+/// order and a FIFO is all the scheduling needed.
 fn kill_later(pgid: libc::pid_t) {
-    type Queue = mpsc::Sender<(std::time::Instant, libc::pid_t)>;
+    type Queue = mpsc::Sender<std::time::Instant>;
     static QUEUE: OnceLock<Option<Queue>> = OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<(std::time::Instant, libc::pid_t)>();
+        let (tx, rx) = mpsc::channel::<std::time::Instant>();
         std::thread::Builder::new()
             .name("hostctl-kill".into())
             .spawn(move || {
-                for (at, pgid) in rx {
+                for at in rx {
                     std::thread::sleep(at.saturating_duration_since(std::time::Instant::now()));
-                    killpg(pgid, libc::SIGKILL);
+                    kill_due(at);
                 }
             })
             .ok()
             .map(|_| tx)
     });
     let at = std::time::Instant::now() + KILL_GRACE;
-    if queue.as_ref().is_none_or(|tx| tx.send((at, pgid)).is_err()) {
+    pending_kills().push((at, pgid));
+    if queue.as_ref().is_none_or(|tx| tx.send(at).is_err()) {
         // No helper thread: better no grace than no kill.
+        kill_due(at);
+    }
+}
+
+/// SIGKILL the pending groups whose kill is due by `by`, once each.
+fn kill_due(by: std::time::Instant) {
+    let due: Vec<libc::pid_t> = {
+        let mut pending = pending_kills();
+        let (due, later): (Vec<_>, Vec<_>) = pending.drain(..).partition(|&(at, _)| at <= by);
+        *pending = later;
+        due.into_iter().map(|(_, pgid)| pgid).collect()
+    };
+    for pgid in due {
         killpg(pgid, libc::SIGKILL);
+    }
+}
+
+/// How often [`finish_kills`] looks whether the groups it waits for are
+/// gone already.
+const FINISH_POLL: Duration = Duration::from_millis(5);
+
+/// Send the SIGKILLs still pending for dropped runs: wait (at most until
+/// the latest is due, 200 ms after its SIGTERM) for their groups to end,
+/// then SIGKILL what is left. For hostctl's way out: those SIGKILLs come
+/// from a helper thread that dies with the process, so without this a
+/// child that ignores SIGTERM (a ProxyCommand, a stuck evaluation) outlives
+/// hostctl whenever it exits within the grace period — after Ctrl-C, say.
+pub fn finish_kills() {
+    loop {
+        let latest = {
+            let mut pending = pending_kills();
+            // Nothing is left to kill in a group whose processes are gone.
+            pending.retain(|&(_, pgid)| killpg(pgid, 0));
+            pending.iter().map(|&(at, _)| at).max()
+        };
+        let Some(latest) = latest else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if now >= latest {
+            kill_due(latest);
+            return;
+        }
+        std::thread::sleep((latest - now).min(FINISH_POLL));
     }
 }
 
@@ -665,6 +719,30 @@ mod tests {
         drop(running);
         for pid in pids {
             assert!(gone(pid, Duration::from_secs(2)).await, "{pid} survived");
+        }
+    }
+
+    #[tokio::test]
+    async fn finishing_sigkills_what_dropped_runs_left() {
+        let script = r#"trap '' TERM; echo $$ >"$1"; sleep 30 & echo $! >>"$1"; wait"#;
+        let (running, pids) = start(script, 2).await;
+        drop(running);
+        let pgid = pids[0];
+        assert!(pending_kills().iter().any(|&(_, p)| p == pgid));
+        let started = std::time::Instant::now();
+        finish_kills();
+        // Not before their grace period is over, and then all of them.
+        assert!(
+            started.elapsed() >= KILL_GRACE - Duration::from_millis(50),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!pending_kills().iter().any(|&(_, p)| p == pgid));
+        for pid in pids {
+            assert!(
+                gone(pid, Duration::from_millis(500)).await,
+                "{pid} survived"
+            );
         }
     }
 
