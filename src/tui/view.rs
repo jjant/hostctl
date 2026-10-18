@@ -1330,12 +1330,22 @@ fn drift_short(drift: &Drift, now_unix: i64) -> String {
             rev,
             last_modified,
             newer_by,
+            branches,
             ..
-        } => match (newer_by, last_modified) {
-            (Some(by), _) => format!("on {} ({} newer)", short_rev(rev), age(0, *by)),
-            (None, Some(at)) => format!("on {} ({} old)", short_rev(rev), age(*at, now_unix)),
-            (None, None) => format!("on {}", short_rev(rev)),
-        },
+        } => {
+            let rev = short_rev(rev);
+            let age = match (newer_by, last_modified) {
+                (Some(by), _) => Some(format!("{} newer", age(0, *by))),
+                (None, Some(at)) => Some(format!("{} old", age(*at, now_unix))),
+                (None, None) => None,
+            };
+            match (branches.first(), age) {
+                (Some(branch), Some(age)) => format!("on {} ({rev}, {age})", flat(branch)),
+                (Some(branch), None) => format!("on {} ({rev})", flat(branch)),
+                (None, Some(age)) => format!("on {rev} ({age})"),
+                (None, None) => format!("on {rev}"),
+            }
+        }
         Drift::SameRevision => "same rev, different build".into(),
         Drift::Staged => "staged: switch/reboot pending".into(),
         Drift::Unknown => "unknown generation".into(),
@@ -3904,6 +3914,7 @@ mod tests {
             last_modified: Some(NOW_UNIX - 3 * 86_400),
             from_generation,
             newer_by: None,
+            branches: vec![],
         };
         assert_eq!(
             drift_long(&revision(true), NOW_UNIX),
@@ -4004,6 +4015,7 @@ mod tests {
                     last_modified: None,
                     from_generation: true,
                     newer_by: None,
+                    branches: vec![],
                 },
                 NOW_UNIX
             ),
@@ -4016,6 +4028,7 @@ mod tests {
                     last_modified: Some(NOW_UNIX - 600),
                     from_generation: true,
                     newer_by: Some(3 * 3600 + 120),
+                    branches: vec![],
                 },
                 NOW_UNIX
             ),

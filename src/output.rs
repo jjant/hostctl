@@ -307,14 +307,23 @@ fn drift_text(drift: &Drift, now_unix: i64) -> Cow<'static, str> {
             rev,
             last_modified,
             newer_by,
+            branches,
             ..
-        } => match (newer_by, last_modified) {
-            (Some(by), _) => format!("on {} ({} newer)", short_rev(rev), age(0, *by)).into(),
-            (None, Some(at)) => {
-                format!("on {} ({} old)", short_rev(rev), age(*at, now_unix)).into()
+        } => {
+            let rev = short_rev(rev);
+            let age = match (newer_by, last_modified) {
+                (Some(by), _) => Some(format!("{} newer", age(0, *by))),
+                (None, Some(at)) => Some(format!("{} old", age(*at, now_unix))),
+                (None, None) => None,
+            };
+            match (branches.first(), age) {
+                (Some(branch), Some(age)) => format!("on {} ({rev}, {age})", one_line(branch)),
+                (Some(branch), None) => format!("on {} ({rev})", one_line(branch)),
+                (None, Some(age)) => format!("on {rev} ({age})"),
+                (None, None) => format!("on {rev}"),
             }
-            (None, None) => format!("on {}", short_rev(rev)).into(),
-        },
+            .into()
+        }
     }
 }
 
@@ -622,6 +631,7 @@ fn drift_json<S: serde::Serializer>(
             last_modified: Option<i64>,
             from_generation: bool,
             newer: bool,
+            branches: &'a [String],
         },
         Unknown,
     }
@@ -633,18 +643,21 @@ fn drift_json<S: serde::Serializer>(
             last_modified,
             from_generation,
             newer_by,
+            branches,
         } => Json::Revision {
             rev,
             last_modified: *last_modified,
             from_generation: *from_generation,
             newer: newer_by.is_some(),
+            branches,
         },
         Drift::Unknown => Json::Unknown,
     });
     json.serialize(serializer)
 }
 
-/// `drift` with its (probe-reported) revision sanitized.
+/// `drift` with its (probe-reported) revision and (git-reported) branches
+/// sanitized.
 fn clean_drift(drift: Drift) -> Drift {
     match drift {
         Drift::Revision {
@@ -652,11 +665,13 @@ fn clean_drift(drift: Drift) -> Drift {
             last_modified,
             from_generation,
             newer_by,
+            branches,
         } => Drift::Revision {
             rev: clean(&rev),
             last_modified,
             from_generation,
             newer_by,
+            branches: branches.iter().map(|b| clean(b)).collect(),
         },
         other => other,
     }
@@ -2358,7 +2373,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
             aarch64["drift"],
             serde_json::json!({
                 "type": "revision", "rev": OLD_REV, "lastModified": NOW - 4 * MONTH - 9 * DAY,
-                "fromGeneration": false, "newer": false
+                "fromGeneration": false, "newer": false, "branches": []
             })
         );
         assert_eq!(aarch64["current"], HM_1);
@@ -2435,7 +2450,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
             reboot["drift"],
             serde_json::json!({
                 "type": "revision", "rev": OLD_REV, "lastModified": null, "fromGeneration": true,
-                "newer": false
+                "newer": false, "branches": []
             })
         );
         assert_eq!(

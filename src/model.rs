@@ -259,6 +259,8 @@ pub enum Drift {
         /// (seconds), when it was: activating would go back to an older
         /// commit.
         newer_by: Option<i64>,
+        /// The branches it is the head of, when known.
+        branches: Vec<String>,
     },
     Unknown,
 }
@@ -275,6 +277,9 @@ pub struct HostState {
     pub diff_inputs: Option<(StorePath, StorePath)>,
     /// Which cached revision the current generation belongs to, if any.
     pub deployed: Option<DeployedRev>,
+    /// The branches the revision its generation records heads, and that
+    /// revision ([`Event::RevisionBranches`]).
+    pub branches: Option<(String, Vec<String>)>,
 }
 
 impl HostState {
@@ -286,6 +291,7 @@ impl HostState {
             diff: Slot::default(),
             diff_inputs: None,
             deployed: None,
+            branches: None,
         }
     }
 
@@ -367,11 +373,18 @@ impl HostState {
             }
             _ => None,
         };
+        let branches = self
+            .branches
+            .as_ref()
+            .filter(|(of, _)| *of == rev)
+            .map(|(_, branches)| branches.clone())
+            .unwrap_or_default();
         Some(Drift::Revision {
             rev,
             last_modified,
             from_generation,
             newer_by,
+            branches,
         })
     }
 
@@ -385,15 +398,20 @@ impl HostState {
             Drift::Revision {
                 rev,
                 newer_by: Some(by),
+                branches,
                 ..
             } => {
                 let short: String = rev.chars().take(7).collect();
+                let short = crate::util::one_line(&short);
+                let on = match branches.first() {
+                    Some(branch) => format!("{} ({short})", crate::util::one_line(branch)),
+                    None => short.into_owned(),
+                };
                 let ago = crate::util::format_ago(0, by);
                 let by = ago.strip_suffix(" ago").unwrap_or(&ago);
                 Some(format!(
-                    "{} runs {}, a commit {by} newer than the compared one: this goes back",
+                    "{} runs {on}, a commit {by} newer than the compared one: this goes back",
                     crate::util::one_line(&self.host.name),
-                    crate::util::one_line(&short)
                 ))
             }
             _ => None,
@@ -456,6 +474,13 @@ pub enum Event {
         flake: String,
         rev: String,
         last_modified: i64,
+    },
+    /// The branches of `flake`'s repository a revision some hosts run is
+    /// the head of.
+    RevisionBranches {
+        flake: String,
+        rev: String,
+        branches: Vec<String>,
     },
     EvalStarted(HostId),
     EvalFinished {
@@ -608,6 +633,19 @@ impl AppState {
                             rev: Some(rev.clone()),
                             last_modified: Some(last_modified),
                         });
+                    }
+                }
+            }
+            Event::RevisionBranches {
+                flake,
+                rev,
+                branches,
+            } => {
+                for h in &mut self.hosts {
+                    let runs_it = h.host.flake == flake
+                        && h.report().and_then(|r| r.revision.as_deref()) == Some(rev.as_str());
+                    if runs_it {
+                        h.branches = Some((rev.clone(), branches.clone()));
                     }
                 }
             }
@@ -941,6 +979,7 @@ mod tests {
                 last_modified: None,
                 from_generation: true,
                 newer_by: None,
+                branches: vec![],
             })
         );
         s.apply(
@@ -962,6 +1001,7 @@ mod tests {
                 last_modified: Some(7),
                 from_generation: false,
                 newer_by: None,
+                branches: vec![],
             })
         );
         evaluated(&mut s, 0, Ok(desired('a')));
@@ -1021,6 +1061,27 @@ mod tests {
         // Only the hosts of that flake running that revision.
         assert_eq!(revision(&s, 1), (None, None));
         assert_eq!(revision(&s, 2), (None, None));
+        s.apply(
+            Event::RevisionBranches {
+                flake: "f".into(),
+                rev: "rev-x".into(),
+                branches: vec!["feat/x".into()],
+            },
+            Instant::now(),
+        );
+        assert!(
+            matches!(&s.hosts[0].drift(), Some(Drift::Revision { branches, .. }) if branches == &["feat/x"]),
+            "{:?}",
+            s.hosts[0].drift()
+        );
+        assert!(
+            matches!(&s.hosts[1].drift(), Some(Drift::Revision { branches, .. }) if branches.is_empty()),
+            "another flake"
+        );
+        assert_eq!(
+            s.hosts[0].going_back().as_deref(),
+            Some("a runs feat/x (rev-x), a commit 10m newer than the compared one: this goes back")
+        );
         dated(&mut s, "rev-y", 400);
         assert_eq!(revision(&s, 2), (Some(400), None), "older");
         assert_eq!(s.hosts[2].status(), Status::Outdated);
@@ -1318,11 +1379,12 @@ mod tests {
             last_modified: Some(1),
             from_generation: true,
             newer_by: Some(60),
+            branches: vec![],
         })
         .unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"type": "revision", "rev": "abc", "lastModified": 1, "fromGeneration": true, "newerBy": 60})
+            serde_json::json!({"type": "revision", "rev": "abc", "lastModified": 1, "fromGeneration": true, "newerBy": 60, "branches": []})
         );
     }
 

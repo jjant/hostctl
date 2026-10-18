@@ -29,6 +29,7 @@ expression: json
       "desired": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
       "destination": "al2-aarch64",
       "drift": {
+        "branches": [],
         "fromGeneration": false,
         "lastModified": 1781104400,
         "newer": false,
@@ -299,6 +300,7 @@ expression: json
       "desired": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
       "destination": "tryout",
       "drift": {
+        "branches": [],
         "fromGeneration": true,
         "lastModified": 1792250811,
         "newer": true,

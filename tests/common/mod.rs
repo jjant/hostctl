@@ -9,11 +9,12 @@
 //!
 //! ```text
 //! home/  tmp/  xdg/{config/hostctl/config.toml,cache}  r/ (XDG_RUNTIME_DIR)
-//! fake/bin/{nix,ssh,nix-store}   the fakes, first on PATH
-//! fake/flakes/ evals/ builds/ hosts.json   what `nix` answers
+//! fake/bin/{nix,ssh,nix-store,git}   the fakes, first on PATH
+//! fake/flakes/ evals/ builds/ commits/ hosts.json   what `nix` answers
+//! fake/heads/                    what `git ls-remote` answers
 //! fake/closures/                 this machine's store, for `nix-store`
 //! fake/hosts/<host>/             a host `ssh` reaches (or this machine)
-//! fake/log                       every nix and ssh call
+//! fake/log                       every nix, ssh and git call
 //! ```
 
 #![allow(dead_code)] // Each test binary uses its own part of this.
@@ -605,6 +606,7 @@ impl World {
             ("fake-nix", "nix"),
             ("fake-ssh", "ssh"),
             ("fake-nix-store", "nix-store"),
+            ("fake-git", "git"),
         ] {
             let bin = fake.join("bin").join(to);
             write_executable(&bin, fs::read(support.join(from)).unwrap());
@@ -714,6 +716,17 @@ impl World {
     /// The locked URL [`World::flake_at`] gives `flake` at `rev`.
     pub fn locked(flake: &str, rev: &str) -> String {
         format!("{flake}/{rev}?narHash=sha256-{}%3D", &rev[..8])
+    }
+
+    /// `git ls-remote --heads` of `remote` lists these `(commit, branch)`.
+    pub fn heads(&self, remote: &str, heads: &[(&str, &str)]) -> Answer {
+        let file = self.fake.join("heads").join(key(remote));
+        let listing: String = heads
+            .iter()
+            .map(|(rev, branch)| format!("{rev}\trefs/heads/{branch}\n"))
+            .collect();
+        write(&file, listing);
+        Answer(file)
     }
 
     /// The commit `url` names (a flake reference at one revision) was made

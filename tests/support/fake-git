@@ -1,0 +1,28 @@
+#!/bin/sh
+# Fake `git` for hostctl's integration tests (see tests/common/mod.rs): only
+# `git ls-remote --heads -- <remote>`, answered from $HOSTCTL_FAKE/heads/<remote>
+# (<remote> with every character outside [A-Za-z0-9._-] replaced by `_`);
+# without that file the repository isn't found. Every call appends
+# "start <pid> git <args…>" and "end <pid> <exit code>" to $HOSTCTL_FAKE/log.
+set -u
+F=${HOSTCTL_FAKE:?HOSTCTL_FAKE not set}
+printf 'start %s git %s\n' "$$" "$*" >>"$F/log"
+finish() {
+  printf 'end %s %s\n' "$$" "$1" >>"$F/log"
+  exit "$1"
+}
+last=
+for arg in "$@"; do last=$arg; done
+case "${1:-}" in
+ls-remote)
+  file=$F/heads/$(printf '%s' "$last" | tr -c 'A-Za-z0-9._-' '_')
+  if [ -f "$file" ]; then
+    cat "$file"
+    finish 0
+  fi
+  echo "fatal: repository '$last' not found" >&2
+  finish 128
+  ;;
+esac
+echo "fake-git: unexpected $*" >&2
+finish 1

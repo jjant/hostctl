@@ -129,10 +129,12 @@ From most to least urgent (the order `s` sorts by):
 the compared one (by commit time, not history: once the compared branch gets a
 later commit, the host is outdated again), as its generation records it. It
 isn't in the `update:` suggestion, `hostctl activate` skips it unless
-`--force`, and activating it warns that it goes back. To date a recorded
-revision it hasn't evaluated, hostctl fetches that commit of the flake's
-repository after the check (github, gitlab, sourcehut or git flakes; once per
-commit, again an hour after a failure or on `--refresh`, never `--offline`).
+`--force`, and activating it warns that it goes back. It reads `on feat/x
+(878d66c, 8h newer)` when `git ls-remote --heads` of the flake's repository
+(with git on `PATH`) has a branch at that commit. To date a recorded revision it
+hasn't evaluated, hostctl fetches that commit of the flake's repository after
+the check (github, gitlab, sourcehut or git flakes; once per commit, again an
+hour after a failure or on `--refresh`, never `--offline`).
 
 **Drift** says why an outdated host differs: `on <rev> (<age> old)` (the
 revision it runs, recorded by the generation itself as `configurationRevision`
@@ -375,7 +377,7 @@ else is passed through and left to `hostctl config check`.
       "flake": "github:you/nix-config",
       "attr": "nixosConfigurations.desk.config.system.build.toplevel",
       "status": "outdated",
-      "drift": { "type": "revision", "rev": "1a2b3c4…", "lastModified": 1791980811, "fromGeneration": false, "newer": false },
+      "drift": { "type": "revision", "rev": "1a2b3c4…", "lastModified": 1791980811, "fromGeneration": false, "newer": false, "branches": [] },
       "current": "/nix/store/ykn4vz9v…-nixos-system-desk",
       "desired": "/nix/store/wqnds0yy…-nixos-system-desk",
       "cached": true,
@@ -404,7 +406,8 @@ and a `revision` drift also has the deployed `rev`, its `lastModified` (`null`
 unless hostctl knows it), `fromGeneration` (`true` when the generation records
 the revision itself, `false` when hostctl's cache remembered it) and `newer`
 (`true` when the generation's own revision was committed after the compared
-one: the host is `ahead`; `false` when that isn't known). `activate` is `null` when hostctl has no activation for the
+one: the host is `ahead`; `false` when that isn't known) and `branches` (those
+whose head that revision is). `activate` is `null` when hostctl has no activation for the
 host, else the exact `command` and where it runs, `runsOn`: `"here"` (this
 machine) or `"remote"` (on the host, over ssh). `error` is `{ "summary",
 "detail" }`. `activated` and `lastModified` are Unix seconds. `hostctl diff
@@ -573,7 +576,8 @@ slowest probe, a quarter of a second.
   fetching that commit's tree from the compared flake's repository (no
   evaluation, no inputs). A host can name any commit that repository serves
   (on GitHub, also its forks' commits), so a host that lies about its
-  revision can make itself look ahead, but no more.
+  revision can make itself look ahead, but no more. Branch names come from
+  `git ls-remote` of that repository, which never prompts for credentials.
 - Everything a host or flake says (names, paths, errors) is stripped of
   terminal control sequences before it is displayed.
 - The cache (`$XDG_CACHE_HOME/hostctl/cache.json`) holds store paths and

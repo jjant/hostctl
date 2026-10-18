@@ -60,7 +60,10 @@ locked URL with the commit swapped in, so nothing of it is evaluated (no
 all, never `--offline` or on a stale resolution; a failure is retried after an
 hour or on `--refresh`. Ahead hosts exit 1 (they don't run the compared
 configuration either) but aren't suggested for `update:`, `activate` skips them
-without `--force`, and activating one warns that it goes back.
+without `--force`, and activating one warns that it goes back. Alongside the
+dating, `git ls-remote --heads` of the flake's repository (forge web URL or a
+`git` flake's `locked.url`; `GIT_TERMINAL_PROMPT=0`, ssh in BatchMode) names the
+branches a recorded revision heads: `on feat/x (878d66c, 8h newer)`.
 
 Exit codes: `0` all up to date (offline optional hosts allowed), `1` some
 outdated / not activated / ahead, `2` trouble (unreachable, failed, pending, stale flake,

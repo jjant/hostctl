@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::fs::{DirBuilder, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -384,8 +384,8 @@ impl Engine {
     /// - the cache is saved when the check completes.
     ///
     /// Events: `RunStarted`, every `ProbeStarted` (in `hosts` order), every
-    /// `FlakeStarted`, then results as they arrive, any `RevisionDated`,
-    /// `RunFinished` last.
+    /// `FlakeStarted`, then results as they arrive, any `RevisionDated` and
+    /// `RevisionBranches`, `RunFinished` last.
     pub async fn check(&self, hosts: &[(HostId, Host)], known: &[FlakeInfo], tx: &EventTx) {
         let run = Run::new(tx);
         run.send(Event::RunStarted);
@@ -405,7 +405,7 @@ impl Engine {
             self.probe_hosts(&run, hosts),
             self.evaluate_flakes(&run, &flakes)
         );
-        self.date_revisions(&run).await;
+        tokio::join!(self.date_revisions(&run), self.find_branches(&run));
         self.save_cache_off_thread().await;
         run.send(Event::RunFinished);
     }
@@ -911,6 +911,9 @@ impl Engine {
             .and_then(|report| report.deployed())
             .and_then(|path| self.with_cache(|cache| cache.deployed_rev(path)));
         if let Some(rev) = report.and_then(|report| report.revision.as_deref()) {
+            if nix::is_commit_hash(rev) {
+                run.recorded(&host.flake, rev);
+            }
             let dated = deployed
                 .as_ref()
                 .is_some_and(|d| d.rev.as_deref() == Some(rev) && d.last_modified.is_some());
@@ -935,6 +938,68 @@ impl Engine {
             result,
             deployed,
         });
+    }
+
+    /// Which branches the revisions in [`Run::recorded`] head: `git
+    /// ls-remote --heads` of each flake's repository
+    /// ([`FlakeInfo::git_remote`]) that has such a revision other than the
+    /// compared one, within [`DATING_TIMEOUT`] (and never asking for
+    /// credentials); sent as `RevisionBranches`. Never under
+    /// [`Freshness::Offline`] or for a stale resolution. Without git, or
+    /// when it fails, revisions just have no branch.
+    async fn find_branches(&self, run: &Run<'_>) {
+        if self.freshness == Freshness::Offline {
+            return;
+        }
+        let recorded = run
+            .recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let resolved = run
+            .resolved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let mut by_flake: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (flake, rev) in recorded {
+            let Some(info) = resolved.get(&flake) else {
+                continue;
+            };
+            if info.stale.is_none() && info.rev.as_deref() != Some(rev.as_str()) {
+                by_flake.entry(flake).or_default().push(rev);
+            }
+        }
+        let lookups = by_flake.into_iter().filter_map(|(flake, revs)| {
+            let remote = resolved.get(&flake)?.git_remote()?;
+            Some(async move {
+                let spec = CommandSpec::new("git")
+                    .args(["ls-remote", "--heads", "--", remote.as_str()])
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+                let out = self.run(spec, Some(DATING_TIMEOUT)).await.ok()?;
+                out.success()
+                    .then(|| (flake, revs, parse_heads(&out.stdout)))
+            })
+        });
+        let mut lookups = futures_util::stream::iter(lookups).buffer_unordered(DATING_JOBS);
+        let finding = async {
+            while let Some(found) = lookups.next().await {
+                let Some((flake, revs, mut heads)) = found else {
+                    continue;
+                };
+                for rev in revs {
+                    if let Some(branches) = heads.remove(&rev) {
+                        run.send(Event::RevisionBranches {
+                            flake: flake.clone(),
+                            rev,
+                            branches,
+                        });
+                    }
+                }
+            }
+        };
+        let _ = tokio::time::timeout(DATING_BUDGET, finding).await;
     }
 
     /// A lookup of when `rev` was committed failed lately (only `--refresh`
@@ -1396,6 +1461,9 @@ struct Run<'a> {
     /// `(flake, rev)`: revisions hosts' generations record that the cache
     /// can't date ([`Engine::date_revisions`]).
     undated: Mutex<Vec<(String, String)>>,
+    /// `(flake, rev)`: every revision hosts' generations record
+    /// ([`Engine::find_branches`]).
+    recorded: Mutex<Vec<(String, String)>>,
     /// The resolutions this check compares against, by flake as configured.
     resolved: Mutex<HashMap<String, FlakeInfo>>,
 }
@@ -1407,15 +1475,17 @@ impl<'a> Run<'a> {
             nix_reported: AtomicBool::new(false),
             ssh_reported: AtomicBool::new(false),
             undated: Mutex::new(Vec::new()),
+            recorded: Mutex::new(Vec::new()),
             resolved: Mutex::new(HashMap::new()),
         }
     }
 
     fn undated(&self, flake: &str, rev: &str) {
-        let mut undated = self.undated.lock().unwrap_or_else(PoisonError::into_inner);
-        if !undated.iter().any(|(f, r)| f == flake && r == rev) {
-            undated.push((flake.to_owned(), rev.to_owned()));
-        }
+        push_new(&self.undated, flake, rev);
+    }
+
+    fn recorded(&self, flake: &str, rev: &str) {
+        push_new(&self.recorded, flake, rev);
     }
 
     fn resolved(&self, info: &FlakeInfo) {
@@ -1437,6 +1507,38 @@ impl<'a> Run<'a> {
             self.send(Event::Unrunnable(ErrorInfo::msg(message)));
         }
     }
+}
+
+fn push_new(pairs: &Mutex<Vec<(String, String)>>, flake: &str, rev: &str) {
+    let mut pairs = pairs.lock().unwrap_or_else(PoisonError::into_inner);
+    if !pairs.iter().any(|(f, r)| f == flake && r == rev) {
+        pairs.push((flake.to_owned(), rev.to_owned()));
+    }
+}
+
+/// `git ls-remote --heads` output → each commit and the branches it heads
+/// (sorted). Lines that aren't `<commit hash>\trefs/heads/<name>` are
+/// skipped.
+fn parse_heads(stdout: &str) -> HashMap<String, Vec<String>> {
+    let mut heads: HashMap<String, Vec<String>> = HashMap::new();
+    for line in stdout.lines() {
+        let Some((rev, name)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(branch) = name.trim_end().strip_prefix("refs/heads/") else {
+            continue;
+        };
+        if nix::is_commit_hash(rev) && !branch.is_empty() {
+            heads
+                .entry(rev.to_owned())
+                .or_default()
+                .push(branch.to_owned());
+        }
+    }
+    for branches in heads.values_mut() {
+        branches.sort();
+    }
+    heads
 }
 
 #[derive(Debug, Clone)]
@@ -2034,6 +2136,7 @@ mod tests {
                     format!("raw {login} {}", rest.join(" "))
                 }
             }
+            "git" => format!("heads {last}"),
             "sh" if args == ["-s"] => format!("{script} local"),
             "sh" => "interactive local".into(),
             _ if args == ["--version"] => "version".into(),
@@ -2363,6 +2466,11 @@ error:
                 rev,
                 last_modified,
             } => format!("dated {flake}@{} {last_modified}", &rev[..7]),
+            Event::RevisionBranches {
+                flake,
+                rev,
+                branches,
+            } => format!("branches {flake}@{} {}", &rev[..7], branches.join(",")),
             Event::EvalStarted(id) => format!("eval+ {id}"),
             Event::EvalFinished {
                 id,
@@ -3450,18 +3558,38 @@ error:
             &format!("commit-time {GITHUB}/{REV2}"),
             Reply::ok("1792300000").after(50),
         );
+        fake.on(
+            "heads https://github.com/o/r",
+            Reply::ok(format!(
+                "{REV1}\trefs/heads/main\n{REV2}\trefs/heads/feat/x\n{REV2}\trefs/heads/also\n"
+            ))
+            .after(20),
+        );
         let hosts = ids(vec![remote("web1")]);
         let engine = engine(&config(), Cache::in_memory(), &fake);
         let seen = lines(&check(&engine, &hosts, &[]).await);
         // After the probe and the evaluation, not in their way.
         assert_eq!(
-            &seen[seen.len() - 3..],
+            &seen[seen.len() - 4..],
             [
                 "400 eval- 0 main",
+                "420 branches github:o/r@1a2b3c4 also,feat/x",
                 "450 dated github:o/r@1a2b3c4 1792300000",
                 "450 run-"
             ],
             "{seen:#?}"
+        );
+        let git = &fake.calls_to("heads https://github.com/o/r")[0];
+        assert_eq!(
+            git.spec.args,
+            ["ls-remote", "--heads", "--", "https://github.com/o/r"]
+        );
+        assert!(
+            git.spec
+                .env
+                .contains(&("GIT_TERMINAL_PROMPT".into(), "0".into())),
+            "{:?}",
+            git.spec.env
         );
         let call = &fake.calls_to(&format!("commit-time {GITHUB}/{REV2}"))[0];
         assert_eq!(call.timeout, Some(DATING_TIMEOUT));
@@ -3581,6 +3709,15 @@ error:
             "{seen:#?}"
         );
         assert_eq!(seen.last().map(String::as_str), Some("30300 run-"));
+    }
+
+    #[test]
+    fn git_heads_are_parsed() {
+        let heads = parse_heads(&format!(
+            "{REV2}\trefs/heads/zeta\n{REV2}\trefs/heads/alpha\n{REV1}\trefs/tags/v1\nnot a line\nabc\trefs/heads/short\n{REV1}\trefs/heads/\n"
+        ));
+        assert_eq!(heads.len(), 1, "{heads:?}");
+        assert_eq!(heads[REV2], ["alpha", "zeta"]);
     }
 
     #[tokio::test(start_paused = true)]

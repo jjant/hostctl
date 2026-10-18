@@ -859,7 +859,7 @@ fn the_json_report_has_every_field() {
     assert_eq!(web2["revision"], REV2);
     assert_eq!(
         web2["drift"],
-        json!({ "type": "revision", "rev": REV2, "lastModified": null, "fromGeneration": true, "newer": false })
+        json!({ "type": "revision", "rev": REV2, "lastModified": null, "fromGeneration": true, "newer": false, "branches": [] })
     );
 
     let web3 = by_name("web3");
@@ -1271,13 +1271,17 @@ fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     home_host(&w, "web1", &hm('b'), &hm('a')).revision(&hm('b'), REV2);
     home_host(&w, "web2", &hm('c'), &hm('d'));
     w.commit(&format!("{FLAKE}/{REV2}"), now() - 3600 - 60);
+    w.heads(
+        "https://github.com/o/r",
+        &[(REV1, "main"), (REV2, "feat/x")],
+    );
 
     let run = w.run(&["status", "--plain"]);
     run.code(1);
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ↑ ahead     gen 5 · 3d ago · on 2222222 (1h newer)\
+         \n  web1  ↑ ahead     gen 5 · 3d ago · on feat/x (2222222, 1h newer)\
          \n  web2  ✗ outdated  gen 5 · 3d ago · unknown generation\n\
          \n1 outdated · 1 ahead · <took>\nupdate: hostctl activate web2\n"
     );
@@ -1286,6 +1290,7 @@ fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     let json = w.run(&["status", "--json"]).json();
     assert_eq!(json["hosts"][0]["status"], "ahead");
     assert_eq!(json["hosts"][0]["drift"]["newer"], true);
+    assert_eq!(json["hosts"][0]["drift"]["branches"], json!(["feat/x"]));
     assert_eq!(json["summary"]["ahead"], 1);
     // The cache remembers the date.
     assert_eq!(lookups().len(), 1, "{}", w.log());
@@ -1300,7 +1305,7 @@ fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     let run = w.run(&["activate", "--yes", "--force", "web1"]);
     assert!(
         run.stdout.contains(
-            "warning: web1 runs 2222222, a commit 1h newer than the compared one: this goes back"
+            "warning: web1 runs feat/x (2222222), a commit 1h newer than the compared one: this goes back"
         ),
         "{run}"
     );
@@ -1333,7 +1338,7 @@ fn the_cache_remembers_which_revision_a_host_runs() {
     let json = w.run(&["status", "--json"]).json();
     assert_eq!(
         json["hosts"][0]["drift"],
-        json!({ "type": "revision", "rev": REV1, "lastModified": modified, "fromGeneration": false, "newer": false })
+        json!({ "type": "revision", "rev": REV1, "lastModified": modified, "fromGeneration": false, "newer": false, "branches": [] })
     );
 }
 

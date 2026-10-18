@@ -367,7 +367,23 @@ impl FlakeInfo {
     }
 
     fn compare_url_between(&self, other: &str, newer: bool) -> Option<String> {
-        let from = other;
+        let (kind, base) = self.forge()?;
+        let rev = self.rev.as_deref().filter(|r| is_hex(r))?;
+        let from = other.strip_suffix("-dirty").unwrap_or(other);
+        if !is_hex(from) {
+            return None;
+        }
+        let (from, to) = if newer { (rev, from) } else { (from, rev) };
+        Some(match kind {
+            "github" => format!("{base}/compare/{from}...{to}"),
+            "gitlab" => format!("{base}/-/compare/{from}...{to}"),
+            _ => format!("{base}/log/{to}"),
+        })
+    }
+
+    /// For github/gitlab/sourcehut flakes (honoring `?host=`), the kind and
+    /// the repository's web URL (`https://github.com/o/r`).
+    fn forge(&self) -> Option<(&str, String)> {
         let kind = self.kind.as_deref()?;
         let default_host = match kind {
             "github" => "github.com",
@@ -375,11 +391,6 @@ impl FlakeInfo {
             "sourcehut" => "git.sr.ht",
             _ => return None,
         };
-        let rev = self.rev.as_deref().filter(|r| is_hex(r))?;
-        let from = from.strip_suffix("-dirty").unwrap_or(from);
-        if !is_hex(from) {
-            return None;
-        }
         // `<kind>:<owner>/<repo>/<rev>?<query>`; gitlab subgroups are `%2F`-escaped.
         let rest = self.locked.strip_prefix(kind)?.strip_prefix(':')?;
         let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -398,12 +409,19 @@ impl FlakeInfo {
             percent_decode(owner),
             percent_decode(repo)
         );
-        let (from, to) = if newer { (rev, from) } else { (from, rev) };
-        Some(match kind {
-            "github" => format!("{base}/compare/{from}...{to}"),
-            "gitlab" => format!("{base}/-/compare/{from}...{to}"),
-            _ => format!("{base}/log/{to}"),
-        })
+        Some((kind, base))
+    }
+
+    /// The repository git can list the branches of: a forge's web URL, or a
+    /// `git` flake's `locked.url` (`https://…`, `ssh://…`, `file://…`).
+    pub fn git_remote(&self) -> Option<String> {
+        match self.kind.as_deref()? {
+            "git" => self
+                .locked_url
+                .clone()
+                .filter(|url| !url.is_empty() && !url.starts_with('-')),
+            _ => Some(self.forge()?.1),
+        }
     }
 }
 
@@ -1145,6 +1163,7 @@ error:
             Some("github:jjant/nix-config/40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4")
         );
         let git = parse_metadata("git+file:///tmp/hostctl-ifd", GIT, "").unwrap();
+        assert_eq!(git.git_remote().as_deref(), Some("file:///tmp/hostctl-ifd"));
         assert_eq!(
             git.at_rev(REV).as_deref(),
             Some("git+file:///tmp/hostctl-ifd?rev=40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4")
@@ -1152,6 +1171,7 @@ error:
         // Nothing to swap.
         let path = parse_metadata("/tmp/hostctl-ifd", PATH, "").unwrap();
         assert_eq!(path.at_rev(REV), None);
+        assert_eq!(path.git_remote(), None);
         let dirty = parse_metadata(".", GIT_DIRTY, GIT_DIRTY_STDERR).unwrap();
         assert_eq!(dirty.at_rev(REV), None);
         // What a host reports must be a commit, not a way into the URL.
@@ -1549,6 +1569,10 @@ error:
         assert_eq!(
             info.compare_url("1a2b3c4-dirty").as_deref(),
             info.compare_url("1a2b3c4").as_deref()
+        );
+        assert_eq!(
+            info.git_remote().as_deref(),
+            Some("https://github.com/jjant/nix-config")
         );
         // A host ahead: what it has that the compared revision hasn't.
         assert_eq!(
