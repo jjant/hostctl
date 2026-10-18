@@ -1582,14 +1582,16 @@ fn a_probe_that_times_out_is_unreachable() {
     let w = World::new();
     w.flake(REV1);
     w.config("timeout = \"1s\"\n");
-    discover_home(&w, &["web1", "web2"]);
+    // Only a host that never answers: a healthy one racing the real clock
+    // timed out too on a busy machine. That the others are unaffected, and
+    // timeouts in general, are the engine's tests (under virtual time).
+    discover_home(&w, &["web1"]);
     home_host(&w, "web1", &hm('a'), &hm('a')).delay(30.0);
-    home_host(&w, "web2", &hm('b'), &hm('b'));
     let started = Instant::now();
     let run = w.run(&["status", "--plain"]);
     run.code(2);
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        started.elapsed() < Duration::from_secs(25),
         "killed after the timeout, took {:?}",
         started.elapsed()
     );
@@ -1598,7 +1600,6 @@ fn a_probe_that_times_out_is_unreachable() {
             .contains("\n  web1  ? unreachable  timed out after 1s\n"),
         "{run}"
     );
-    assert!(run.stdout.contains("\n  web2  ✓ up to date  "), "{run}");
     let calls = w.ssh_calls("web1");
     assert_eq!(calls.len(), 1, "a timeout isn't retried: {}", w.log());
     assert_eq!(calls[0].end, None, "the probe was killed");
