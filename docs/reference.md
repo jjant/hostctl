@@ -15,7 +15,7 @@ The details the [README](../README.md) leaves out.
 ## Command line
 
 ```text
-hostctl                         status
+hostctl [PATTERN…]              status (with its flags too)
 hostctl status [PATTERN…]       check and print a table   [--json] [--plain]
 hostctl diff HOST               what activating would change (closure diff)   [--build] [--json]
 hostctl activate HOST…          activate the compared generation   [--yes] [--force]

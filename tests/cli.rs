@@ -73,6 +73,22 @@ fn outdated_and_never_activated_hosts_exit_1() {
 }
 
 #[test]
+fn hostctl_alone_is_status() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('c'));
+    let status = w.run(&["status", "--plain"]);
+    let alone = w.run(&["--plain"]);
+    alone.code(1);
+    assert_eq!(table(&alone), table(&status));
+    let json = w.run(&["web1", "--json"]).json();
+    assert_eq!(json["summary"]["total"], 1, "{json}");
+    assert_eq!(json["hosts"][0]["name"], "web1");
+}
+
+#[test]
 fn suggestions_carry_the_flags_the_run_was_given() {
     let (w, host) = activation_world();
     // The config lives elsewhere, named with -c relative to the working

@@ -31,14 +31,30 @@ use crate::util;
     name = "hostctl",
     version,
     about = "Check whether your Nix hosts run their flake's current configuration",
-    after_help = "Without a command: `status`.\n\
+    after_help = "Without a command: `status` (its flags and patterns work here too).\n\
                   Exit codes: 0 up to date, 1 outdated or ahead, 2 trouble, 3 couldn't check, 130 interrupted."
 )]
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
+    /// `status`'s, for `hostctl` without a command.
+    #[command(flatten)]
+    pub status: StatusArgs,
     #[command(subcommand)]
     pub command: Option<Cmd>,
+}
+
+#[derive(Debug, Default, Args)]
+pub struct StatusArgs {
+    /// Only hosts matching these globs (or @local)
+    #[arg(add = ArgValueCompleter::new(complete_hosts))]
+    pub hosts: Vec<String>,
+    /// Print JSON
+    #[arg(long)]
+    pub json: bool,
+    /// Never redraw in place, print once at the end
+    #[arg(long)]
+    pub plain: bool,
 }
 
 #[derive(Debug, Args)]
@@ -96,17 +112,7 @@ pub enum ColorChoice {
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
     /// Check every host and print a table (the default)
-    Status {
-        /// Only hosts matching these globs (or @local)
-        #[arg(add = ArgValueCompleter::new(complete_hosts))]
-        hosts: Vec<String>,
-        /// Print JSON
-        #[arg(long)]
-        json: bool,
-        /// Never redraw in place, print once at the end
-        #[arg(long)]
-        plain: bool,
-    },
+    Status(StatusArgs),
     /// Show what activating would change on a host (closure diff)
     Diff {
         #[arg(add = ArgValueCompleter::new(complete_hosts))]
@@ -327,15 +333,6 @@ enum Check {
 }
 
 impl Check {
-    /// What the command runs when none is given.
-    fn default() -> Check {
-        Check::Status {
-            hosts: Vec::new(),
-            json: false,
-            plain: false,
-        }
-    }
-
     fn patterns(&self) -> &[String] {
         match self {
             Check::Status { hosts, .. }
@@ -349,7 +346,11 @@ impl Check {
 /// Run the command; `hostctl` is how to run hostctl again in this context
 /// ([`command_prefix`]).
 fn run(cli: Cli, hostctl: &str, started: Instant) -> Result<u8, Exit> {
-    let Cli { global, command } = cli;
+    let Cli {
+        global,
+        status,
+        command,
+    } = cli;
     let check = match command {
         // These read neither the configuration (beyond its location) nor
         // anything else, so they work whatever state it is in.
@@ -367,11 +368,17 @@ fn run(cli: Cli, hostctl: &str, started: Instant) -> Result<u8, Exit> {
             print(&setup.config.to_toml())?;
             return Ok(0);
         }
-        Some(Cmd::Status { hosts, json, plain }) => Check::Status { hosts, json, plain },
+        Some(Cmd::Status(StatusArgs { hosts, json, plain })) => {
+            Check::Status { hosts, json, plain }
+        }
         Some(Cmd::Diff { host, build, json }) => Check::Diff { host, build, json },
         Some(Cmd::Activate { hosts, yes, force }) => Check::Activate { hosts, yes, force },
         Some(Cmd::Hosts { hosts }) => Check::Hosts { hosts },
-        None => Check::default(),
+        None => Check::Status {
+            hosts: status.hosts,
+            json: status.json,
+            plain: status.plain,
+        },
     };
     checking(&global, hostctl, started, check)
 }
@@ -1810,11 +1817,16 @@ mod tests {
         assert!(!cli.global.refresh && !cli.global.offline && !cli.global.no_cache);
 
         let cli = parse(&["status", "al2-*", "@local", "--json"]).unwrap();
-        let Some(Cmd::Status { hosts, json, plain }) = cli.command else {
+        let Some(Cmd::Status(StatusArgs { hosts, json, plain })) = cli.command else {
             panic!("{cli:?}")
         };
         assert_eq!(hosts, ["al2-*", "@local"]);
         assert!(json && !plain);
+        // Without a command, the same is `status`'s.
+        let cli = parse(&["al2-*", "--json"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.status.hosts, ["al2-*"]);
+        assert!(cli.status.json);
 
         let cli = parse(&["diff", "bigmem", "--build"]).unwrap();
         assert!(matches!(
@@ -1933,11 +1945,13 @@ mod tests {
             &["--jobs", "many"],
             &["completions", "tcsh"],
             &["config"],
-            &["frobnicate"],
         ] {
             let e = parse(bad).unwrap_err();
             assert_eq!(clap_exit_code(&e), 3, "{bad:?}: {e}");
         }
+        // Not a command: a pattern for `status` (which fails if it matches
+        // no host).
+        assert_eq!(parse(&["frobnicate"]).unwrap().status.hosts, ["frobnicate"]);
         for ok in [
             &["--help"][..],
             &["-h"],
@@ -1975,15 +1989,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_command_is_status() {
-        assert_eq!(
-            Check::default(),
-            Check::Status {
-                hosts: vec![],
-                json: false,
-                plain: false
-            }
-        );
+    fn checks_know_their_patterns() {
         let diff = Check::Diff {
             host: "web1".into(),
             build: false,

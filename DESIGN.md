@@ -422,7 +422,7 @@ build time with `hostctl config check`.
 ## CLI
 
 ```
-hostctl                      # status
+hostctl [PATTERN…]           # status (its flags work too)
 hostctl status [PATTERN…] [--json] [--plain]
 hostctl diff HOST [--build] [--json]
 hostctl activate HOST… [--yes] [--force]
