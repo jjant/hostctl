@@ -11,5 +11,3 @@ github:jjant/work-config: unable to download 'https://api.github.com/repos/jjant
   scratch    ✗ outdated
   lab        … waiting
   work-desk  ! eval failed  unable to download 'https://api.github.com/repos/jjant/work-config/commits/HEAD': HTTP error 404
-
-1 eval failed · 1 outdated · 1 pending · 1 up to date

@@ -1628,7 +1628,7 @@ mod tests {
         assert!(vt.scrollback.is_empty(), "{:?}", vt.scrollback);
         // It was redrawn along the way, not printed once.
         assert!(term.out.matches("A\x1b[K").count() > 3, "{:?}", term.out);
-        assert!(table.contains("2 up to date"), "{table}");
+        assert_eq!(table.matches("✓ up to date").count(), 2, "{table}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1688,7 +1688,7 @@ mod tests {
         );
 
         // A table that fills the screen ends up starting at its top too.
-        let names = ["bigmem", "web1", "web2", "web3", "web4"];
+        let names = ["bigmem", "web1", "web2", "web3", "web4", "web5"];
         let mut s = state(&names);
         let mut term = Fake::new(80, 11);
         run(

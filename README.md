@@ -27,7 +27,6 @@ github:you/nix-config @ 42ea902 (2h ago)
   nas     ✓ up to date
   work    ○ not activated  no home-manager profile
 
-1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 17ms
 update: hostctl activate desk work
 ```
 

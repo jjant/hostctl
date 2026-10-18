@@ -16,5 +16,4 @@ github:jjant/nix-config @ 42ea902 (2h ago)
   darwin-dated    ✗ outdated    on 1a2b3c4 (3w old)
   darwin-ahead    ↑ ahead       on 9b8a7c6 (2h newer)
 
-8 outdated · 1 ahead · 2 up to date · 3.4s
 update: hostctl activate darwin-gen dirty-mac hm-cache hm-same hm-staged hm-unknown nixos-reboot darwin-dated

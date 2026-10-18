@@ -59,5 +59,5 @@ fn the_readme_status_example_is_what_hostctl_prints() {
     w.eval(desk, &store('q', "nixos-system-desk-25.11"));
     let run = w.run(&["status", "--plain", "--refresh"]);
     run.code(1);
-    assert_eq!(masked(&run.stdout), masked(readme_status()), "{run}");
+    assert_eq!(run.stdout, readme_status(), "{run}");
 }

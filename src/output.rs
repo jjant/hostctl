@@ -59,7 +59,6 @@ const CYAN: &str = "36";
 ///   bigmem •     ✓ up to date
 ///   mac-m1       – offline        reachable only from a desk you ssh into from the Mac
 ///
-/// 1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 3.4s
 /// update: hostctl activate al2-aarch64 al2-x86_64
 /// ```
 ///
@@ -78,12 +77,10 @@ const CYAN: &str = "36";
 /// - columns aligned by display width; with `width`, every line is cut with
 ///   `…` to fit (in rows that is the detail column, unless name and status
 ///   alone don't fit); without it nothing is truncated;
-/// - footer: non-zero counts in [`Status`] order, the `•` legend when a
-///   local host is shown, the last run's duration if known; then `update:
-///   hostctl activate <names>` for hosts that need activation (not ahead
-///   ones) and have an activation (`hostctl` as [`AppState::command`] says,
-///   with the flags this run was given); then `error: <summary>` per global
-///   error;
+/// - footer: `update: hostctl activate <names>` for hosts that need
+///   activation (not ahead ones) and have an activation (`hostctl` as
+///   [`AppState::command`] says, with the flags this run was given); then
+///   `error: <summary>` per global error;
 /// - with `style.color`: green ✓, blue ↑, yellow ✗ and ○, red !, magenta ?,
 ///   cyan pending, dim offline, detail and footer.
 ///
@@ -147,19 +144,6 @@ fn render_status(
     }
     out
 }
-
-/// Every status, most urgent first (the footer's order).
-const STATUSES: [Status; 9] = [
-    Status::EvalFailed,
-    Status::ProbeFailed,
-    Status::Unreachable,
-    Status::Outdated,
-    Status::NotActivated,
-    Status::Pending,
-    Status::Offline,
-    Status::Ahead,
-    Status::UpToDate,
-];
 
 fn status_color(status: Status) -> &'static str {
     match status {
@@ -375,37 +359,9 @@ fn flake_line<'a>(state: &AppState, flake: &'a FlakeState, now_unix: i64) -> Lin
     line
 }
 
-/// Counts, legend and duration; the hosts to update; global errors.
+/// The hosts to update; global errors.
 fn footer<'a>(state: &'a AppState, rows: &[Row<'_>]) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
-
-    let mut summary = String::new();
-    for status in STATUSES {
-        let n = rows.iter().filter(|r| r.status == status).count();
-        if n > 0 {
-            item(&mut summary, format_args!("{n} {}", status.label()));
-        }
-    }
-    let shown = |assumed| {
-        state
-            .hosts
-            .iter()
-            .any(|h| h.host.target == Target::Local { assumed })
-    };
-    if shown(false) {
-        item(&mut summary, "• this machine");
-    }
-    if shown(true) {
-        item(&mut summary, "•? this machine (assumed)");
-    }
-    if let Some(took) = state.run.took() {
-        item(&mut summary, format_elapsed(took));
-    }
-    if !summary.is_empty() {
-        let mut line = Line::default();
-        line.push(summary, DIM);
-        lines.push(line);
-    }
 
     let mut names = String::new();
     let mut option_like = false;
@@ -1082,6 +1038,19 @@ mod tests {
     use crate::probe::ProbeReport;
     use crate::storepath::StorePath;
 
+    /// Every status, most urgent first.
+    const STATUSES: [Status; 9] = [
+        Status::EvalFailed,
+        Status::ProbeFailed,
+        Status::Unreachable,
+        Status::Outdated,
+        Status::NotActivated,
+        Status::Pending,
+        Status::Offline,
+        Status::Ahead,
+        Status::UpToDate,
+    ];
+
     const NO_COLOR: Style = Style { color: false };
     const COLOR: Style = Style { color: true };
 
@@ -1465,7 +1434,6 @@ github:jjant/nix-config @ 42ea902 (2h ago)
   bigmem •     ✓ up to date
   mac-m1       – offline        reachable only from a desk you ssh into from the Mac
 
-1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 3.4s
 update: hostctl activate al2-aarch64 al2-x86_64
 ";
         let sim = doc_fleet();
@@ -1899,10 +1867,6 @@ update: hostctl activate al2-aarch64 al2-x86_64
         }
         let table = sim.table(NO_COLOR, None);
         insta::assert_snapshot!("status_local_markers", table);
-        assert!(
-            table.contains("• this machine · •? this machine (assumed)"),
-            "{table}"
-        );
         let json = sim.json();
         let local: Vec<serde_json::Value> = json["hosts"]
             .as_array()

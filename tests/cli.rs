@@ -23,11 +23,6 @@ fn home_host(w: &World, name: &str, current: &str, desired: &str) -> FakeHost {
     host
 }
 
-/// The table of a run, with its duration masked.
-fn table(run: &Run) -> String {
-    masked(&run.stdout)
-}
-
 // ─── status and exit codes ──────────────────────────────────────────────
 
 #[test]
@@ -41,11 +36,10 @@ fn everything_up_to_date_exits_0() {
     let run = w.run(&["status", "--plain"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  web1  ✓ up to date\
-         \n  web2  ✓ up to date\n\
-         \n2 up to date · <took>\n"
+         \n  web2  ✓ up to date\n"
     );
     assert_eq!(run.stderr, "");
 }
@@ -63,12 +57,11 @@ fn outdated_and_never_activated_hosts_exit_1() {
     let run = w.run(&["status", "--plain"]);
     run.code(1);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  web1  ✓ up to date\
          \n  web2  ✗ outdated\
          \n  web3  ○ not activated  no home-manager profile\n\
-         \n1 outdated · 1 not activated · 1 up to date · <took>\
          \nupdate: hostctl activate web2 web3\n"
     );
 }
@@ -83,7 +76,7 @@ fn hostctl_alone_is_status() {
     let status = w.run(&["status", "--plain"]);
     let alone = w.run(&["--plain"]);
     alone.code(1);
-    assert_eq!(table(&alone), table(&status));
+    assert_eq!(alone.stdout, status.stdout);
     let json = w.run(&["web1", "--json"]).json();
     assert_eq!(json["summary"]["total"], 1, "{json}");
     assert_eq!(json["hosts"][0]["name"], "web1");
@@ -133,7 +126,7 @@ fn without_a_command_or_a_terminal_hostctl_prints_the_status() {
     let plain = w.run(&["status", "--plain"]);
     let default = w.run(&[]);
     default.code(1);
-    assert_eq!(table(&default), table(&plain));
+    assert_eq!(default.stdout, plain.stdout);
     assert!(default.stdout.contains("web1  ✗ outdated"), "{default}");
 }
 
@@ -154,10 +147,7 @@ fn an_unreachable_host_exits_2() {
         ),
         "{run}"
     );
-    assert!(
-        run.stdout.contains("\n1 unreachable · 1 up to date · "),
-        "{run}"
-    );
+    assert!(run.stdout.contains("\n  web1  ✓ up to date\n"), "{run}");
 }
 
 #[test]
@@ -556,11 +546,10 @@ fn an_ssh_that_can_t_be_run_is_reported_once() {
     // The check couldn't run.
     run.code(3);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  web1  ? unreachable  ssh couldn't be run\
          \n  web2  ? unreachable  ssh couldn't be run\n\
-         \n2 unreachable · <took>\
          \nerror: ssh.command = \"/nonexistent/ssh\" could not be run: No such file or directory \
          (os error 2); is OpenSSH installed and on PATH?\n"
     );
@@ -639,7 +628,6 @@ fn an_interrupted_check_exits_130() {
         "the sleeping evaluation was killed"
     );
     assert!(run.stdout.contains("  web1  … interrupted\n"), "{run}");
-    assert!(run.stdout.contains("\n1 pending\n"), "{run}");
     let eval = &w.evals()[0];
     assert_eq!(eval.end, None, "the evaluation was killed: {}", w.log());
 }
@@ -945,20 +933,6 @@ fn probes_start_while_the_flake_resolves() {
     assert!(w.nix_calls("eval --json").is_empty(), "no discovery");
 }
 
-/// The duration ending a status table's footer, in milliseconds.
-fn took_ms(table: &str) -> u64 {
-    // `2 up to date · 1.2s`: the counts come first.
-    let footer = table
-        .lines()
-        .find(|l| l.starts_with(|c: char| c.is_ascii_digit()))
-        .unwrap_or_else(|| panic!("no footer in {table}"));
-    let took = footer.rsplit(" · ").next().unwrap();
-    match took.strip_suffix("ms") {
-        Some(ms) => ms.parse().unwrap(),
-        None => (took.strip_suffix('s').unwrap().parse::<f64>().unwrap() * 1000.0) as u64,
-    }
-}
-
 #[test]
 fn probes_start_while_the_flake_resolves_when_its_hosts_are_known() {
     let w = World::new();
@@ -966,11 +940,9 @@ fn probes_start_while_the_flake_resolves_when_its_hosts_are_known() {
     discover_home(&w, &["web1", "web2"]);
     home_host(&w, "web1", &hm('a'), &hm('a'));
     home_host(&w, "web2", &hm('b'), &hm('b'));
-    // Nothing known yet: the hosts are read first, and the time that takes
-    // counts too.
+    // Nothing known yet: the hosts are read first.
     let first = w.run(&["status", "--plain"]);
     first.code(0);
-    assert!(took_ms(&first.stdout) >= 500, "{first}");
     let resolved = &w.resolutions()[0];
     assert!(
         w.calls()
@@ -997,14 +969,11 @@ fn probes_start_while_the_flake_resolves_when_its_hosts_are_known() {
         w.log()
     );
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  web1  ✓ up to date\
-         \n  web2  ✓ up to date\n\
-         \n2 up to date · <took>\n"
+         \n  web2  ✓ up to date\n"
     );
-    // The time it took counts from the start: the resolution included.
-    assert!(took_ms(&run.stdout) >= 500, "{run}");
 }
 
 #[test]
@@ -1023,11 +992,10 @@ fn hosts_the_flake_no_longer_has_are_dropped_once_it_resolved() {
     let run = w.run(&["status", "--plain", "--refresh"]);
     run.code(1);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 2222222 (2h ago)\n\
          \n  web1  ✓ up to date\
          \n  web3  ✗ outdated\n\
-         \n1 outdated · 1 up to date · <took>\
          \nupdate: hostctl activate web3\n"
     );
     assert_eq!(w.resolutions().len(), 2, "one per run:\n{}", w.log());
@@ -1061,8 +1029,8 @@ fn the_live_table_starts_over_in_place_when_the_hosts_changed() {
     // hosts the check started with.
     let plain = w.run(&["status", "--plain"]);
     let screen = pty.screen(100, 30).rows().join("\n");
-    let shown = masked(&format!("{}\n", screen.trim_end()));
-    assert_eq!(shown, table(&plain), "{:?}", pty.output());
+    let shown = format!("{}\n", screen.trim_end());
+    assert_eq!(shown, plain.stdout, "{:?}", pty.output());
     assert!(pty.output().contains("web2"), "it did start with them");
 }
 
@@ -1099,11 +1067,10 @@ fn hosts_with_the_same_attribute_share_one_evaluation() {
     let run = w.run(&["status", "--plain"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  kiosk1  ✓ up to date\
-         \n  kiosk2  ✓ up to date\n\
-         \n2 up to date · <took>\n"
+         \n  kiosk2  ✓ up to date\n"
     );
     assert_eq!(w.evals().len(), 1, "{}", w.log());
 }
@@ -1149,7 +1116,7 @@ fn a_second_run_evaluates_nothing() {
     w.clear_log();
     let second = w.run(&["status", "--plain"]);
     second.code(1);
-    assert_eq!(table(&second), table(&first));
+    assert_eq!(second.stdout, first.stdout);
     assert!(w.evals().is_empty(), "no evaluation:\n{}", w.log());
     assert!(
         w.resolutions().is_empty(),
@@ -1219,7 +1186,7 @@ fn offline_uses_only_what_the_cache_has() {
     w.clear_log();
     let run = w.run(&["status", "--plain", "--offline"]);
     run.code(1);
-    assert_eq!(table(&run), table(&online));
+    assert_eq!(run.stdout, online.stdout);
     assert!(w.resolutions().is_empty(), "no metadata call:\n{}", w.log());
     assert!(w.evals().is_empty(), "no evaluation:\n{}", w.log());
     assert!(w.nix_calls("eval --json").is_empty(), "{}", w.log());
@@ -1285,11 +1252,11 @@ fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     let run = w.run(&["status", "--plain"]);
     run.code(1);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  web1  ↑ ahead  on feat/x (2222222, 1h newer)\
          \n  web2  ✗ outdated\n\
-         \n1 outdated · 1 ahead · <took>\nupdate: hostctl activate web2\n"
+         \nupdate: hostctl activate web2\n"
     );
     let lookups = || w.nix_calls(&format!("{FLAKE}/{REV2}"));
     assert_eq!(lookups().len(), 1, "{}", w.log());
@@ -1429,13 +1396,12 @@ fn checks_reach_hosts_the_way_the_layers_say() {
     let run = w.run(&["status", "--plain"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  jj@desk  ✓ up to date\
          \n  mac      ✓ up to date\
          \n  printer  ✓ up to date\
-         \n  web1     ✓ up to date  the web server\n\
-         \n4 up to date · <took>\n"
+         \n  web1     ✓ up to date  the web server\n"
     );
     assert_eq!(
         run.stderr,
@@ -1480,11 +1446,10 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     let run = w.run(&["status", "--plain", "web*"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  web1  ✓ up to date\
-         \n  web2  ✓ up to date\n\
-         \n2 up to date · <took>\n"
+         \n  web2  ✓ up to date\n"
     );
     let probed: Vec<String> = w
         .calls()
@@ -1500,10 +1465,9 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     let run = w.run(&["status", "--plain", "@local"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  bigmem •  ✓ up to date\n\
-         \n1 up to date · • this machine · <took>\n"
+         \n  bigmem •  ✓ up to date\n"
     );
     assert!(w.calls().iter().all(|c| c.tool == "nix"), "{}", w.log());
 
@@ -1534,10 +1498,9 @@ fn on_a_mac_the_darwin_host_behind_a_tunnel_is_assumed_to_be_this_machine() {
     let run = w.run(&["status", "--plain"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  mac •?  ✓ up to date\n\
-         \n1 up to date · •? this machine (assumed) · <took>\n"
+         \n  mac •?  ✓ up to date\n"
     );
     assert!(
         w.calls().iter().all(|c| c.tool == "nix"),
@@ -1564,11 +1527,10 @@ fn an_unreachable_optional_host_is_offline_and_exits_0() {
     let run = w.run(&["status", "--plain"]);
     run.code(0);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  mac   – offline  reachable from the desk only\
-         \n  web1  ✓ up to date\n\
-         \n1 offline · 1 up to date · <took>\n"
+         \n  web1  ✓ up to date\n"
     );
 }
 
@@ -1604,12 +1566,11 @@ fn forced_command_routes_send_their_command() {
     let run = w.run(&["status", "--plain"]);
     run.code(2);
     assert_eq!(
-        table(&run),
+        run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
          \n  air   ✗ outdated      on 2222222\
          \n  mac   ✓ up to date\
-         \n  mini  ! probe failed  mac-open-recv: unknown mode\n\
-         \n1 probe failed · 1 outdated · 1 up to date · <took>\n"
+         \n  mini  ! probe failed  mac-open-recv: unknown mode\n"
     );
     for (destination, end) in [
         ("jj@localhost", " -p 2022 -- jj@localhost current-system"),
@@ -1952,11 +1913,10 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
         hm('b')
     );
     assert_eq!(
-        masked(&run.stdout),
+        run.stdout,
         format!(
             "github:o/r @ 1111111 (2h ago)\n\
              \n  web1  ✗ outdated\n\
-             \n1 outdated · <took>\
              \nupdate: hostctl activate web1\n\
              \nweb1: {command}\n  runs on web1\n\
              \n==> activating web1 on web1\n\
