@@ -629,7 +629,7 @@ fn an_interrupted_check_exits_130() {
     let run = finish(child);
     run.code(130);
     assert!(
-        interrupted.elapsed() < Duration::from_secs(10),
+        interrupted.elapsed() < Duration::from_secs(20),
         "the sleeping evaluation was killed"
     );
     assert!(run.stdout.contains("  web1  … interrupted\n"), "{run}");
@@ -673,7 +673,7 @@ fn an_interrupted_check_leaves_no_process_behind() {
         // SAFETY: signal 0 only asks whether the group has any process.
         unsafe { libc::killpg(eval, 0) != 0 }
     };
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while !gone() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

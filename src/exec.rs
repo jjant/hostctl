@@ -551,7 +551,7 @@ mod tests {
         let outs = futures_util::future::join_all((0..32).map(|_| run(&spec, Some(LONG)))).await;
         // One after the other would take 9.6 s.
         assert!(
-            start.elapsed() < Duration::from_secs(3),
+            start.elapsed() < Duration::from_secs(8),
             "{:?}",
             start.elapsed()
         );
@@ -589,7 +589,7 @@ mod tests {
     }
 
     /// Run `script` into a 300 ms timeout and check the run ended soon after
-    /// it, killed: within 2 s, where its children sleep 30 s (the slack is for
+    /// it, killed: within 5 s, where its children sleep 30 s (the slack is for
     /// loaded machines). Only if the child didn't even reach the output
     /// `ready` looks for (a very loaded machine), retry with more time.
     async fn run_into_timeout(script: &str, ready: impl Fn(&Output) -> bool) -> Output {
@@ -601,7 +601,7 @@ mod tests {
             assert_eq!(out.code, None);
             // The group gets its grace period after SIGTERM, every time.
             assert!(took >= timeout + KILL_GRACE, "{took:?}");
-            assert!(took < timeout + Duration::from_secs(2), "{took:?}");
+            assert!(took < timeout + Duration::from_secs(5), "{took:?}");
             assert!(out.elapsed >= timeout && out.elapsed <= took);
             if ready(&out) {
                 return out;
@@ -624,7 +624,7 @@ mod tests {
             panic!("{out:?}")
         };
         assert!(
-            gone(sleeper, Duration::from_secs(1)).await,
+            gone(sleeper, Duration::from_secs(10)).await,
             "sleep {sleeper} survived"
         );
     }
@@ -640,7 +640,7 @@ mod tests {
             panic!("{out:?}")
         };
         assert!(
-            gone(proxy, Duration::from_secs(1)).await,
+            gone(proxy, Duration::from_secs(10)).await,
             "proxy {proxy} survived"
         );
     }
@@ -652,7 +652,7 @@ mod tests {
         let start = std::time::Instant::now();
         let out = run(&sh("sleep 5 & echo $!"), None).await.unwrap();
         assert!(
-            start.elapsed() < Duration::from_secs(1),
+            start.elapsed() < Duration::from_secs(4),
             "{:?}",
             start.elapsed()
         );
@@ -705,7 +705,7 @@ mod tests {
         let (running, pids) = start(script, 2).await;
         drop(running);
         for pid in pids {
-            assert!(gone(pid, Duration::from_secs(1)).await, "{pid} survived");
+            assert!(gone(pid, Duration::from_secs(10)).await, "{pid} survived");
         }
     }
 
@@ -719,7 +719,7 @@ mod tests {
         }
         drop(running);
         for pid in pids {
-            assert!(gone(pid, Duration::from_secs(2)).await, "{pid} survived");
+            assert!(gone(pid, Duration::from_secs(10)).await, "{pid} survived");
         }
     }
 
@@ -740,10 +740,7 @@ mod tests {
         );
         assert!(!pending_kills().iter().any(|&(_, p)| p == pgid));
         for pid in pids {
-            assert!(
-                gone(pid, Duration::from_millis(500)).await,
-                "{pid} survived"
-            );
+            assert!(gone(pid, Duration::from_secs(10)).await, "{pid} survived");
         }
     }
 

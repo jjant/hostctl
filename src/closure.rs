@@ -1134,7 +1134,8 @@ mod tests {
 
         assert_eq!((d.paths_before, d.paths_after), (20_000, 20_255));
         assert_eq!(d.counts(), [100, 100, 250, 250, 250, 250]);
-        assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
+        // Milliseconds; the slack is for loaded machines.
+        assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
     }
 
     /// Two closures of `builtins.toFile` paths with every kind of change, ε

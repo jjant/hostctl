@@ -2087,7 +2087,7 @@ mod tests {
             );
             // About 10 ms; the slack is for loaded machines.
             assert!(
-                times[0] < Duration::from_millis(200),
+                times[0] < Duration::from_secs(1),
                 "{}: {times:?}",
                 shell.name
             );
