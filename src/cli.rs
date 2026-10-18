@@ -2435,6 +2435,7 @@ mod tests {
                 result: result.map(|path| Desired {
                     path,
                     rev: Some("4".repeat(40)),
+                    last_modified: None,
                     cached: false,
                 }),
             },

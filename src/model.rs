@@ -70,6 +70,8 @@ pub struct Desired {
     pub path: StorePath,
     /// The flake revision it was evaluated at, when known.
     pub rev: Option<String>,
+    /// When that revision was committed (`lastModified`), when known.
+    pub last_modified: Option<i64>,
     /// Came from the cache (no evaluation ran).
     pub cached: bool,
 }
@@ -229,10 +231,15 @@ pub enum Drift {
     /// Running a generation of another revision.
     Revision {
         rev: String,
+        /// When it was committed, when known.
         last_modified: Option<i64>,
         /// The generation records it (`configurationRevision`), as opposed to
         /// hostctl's cache.
         from_generation: bool,
+        /// How much later than the compared revision it was committed
+        /// (seconds), when it was: activating would go back to an older
+        /// commit.
+        newer_by: Option<i64>,
     },
     Unknown,
 }
@@ -310,27 +317,30 @@ impl HostState {
         if report.profile.as_ref() == Some(&desired.path) {
             return Some(Drift::Staged);
         }
-        let (rev, last_modified, from_generation) = match (&report.revision, &self.deployed) {
-            (Some(rev), _) => (rev.clone(), None, true),
-            (
-                None,
-                Some(DeployedRev {
-                    rev: Some(rev),
-                    last_modified,
-                    ..
-                }),
-            ) => (rev.clone(), *last_modified, false),
+        let (rev, from_generation) = match (&report.revision, &self.deployed) {
+            (Some(rev), _) => (rev.clone(), true),
+            (None, Some(DeployedRev { rev: Some(rev), .. })) => (rev.clone(), false),
             _ => return Some(Drift::Unknown),
         };
         if desired.rev.as_deref() == Some(rev.as_str()) {
-            Some(Drift::SameRevision)
-        } else {
-            Some(Drift::Revision {
-                rev,
-                last_modified,
-                from_generation,
-            })
+            return Some(Drift::SameRevision);
         }
+        // The cache's or a lookup's time, when it is about this revision.
+        let last_modified = self
+            .deployed
+            .as_ref()
+            .filter(|d| d.rev.as_deref() == Some(rev.as_str()))
+            .and_then(|d| d.last_modified);
+        let newer_by = match (last_modified, desired.last_modified) {
+            (Some(deployed), Some(compared)) if deployed > compared => Some(deployed - compared),
+            _ => None,
+        };
+        Some(Drift::Revision {
+            rev,
+            last_modified,
+            from_generation,
+            newer_by,
+        })
     }
 
     /// Something is in flight for this host.
@@ -379,8 +389,16 @@ pub enum Event {
     ProbeFinished {
         id: HostId,
         result: ProbeResult,
-        /// Reverse cache lookup of the probed generation.
+        /// Reverse cache lookup of the probed generation (or, when the
+        /// generation records its revision, the cache's time for it).
         deployed: Option<DeployedRev>,
+    },
+    /// When a revision some hosts of `flake` run was committed (looked up
+    /// after their probes).
+    RevisionDated {
+        flake: String,
+        rev: String,
+        last_modified: i64,
     },
     EvalStarted(HostId),
     EvalFinished {
@@ -516,6 +534,23 @@ impl AppState {
                         h.diff.clear_value();
                     }
                     h.deployed = deployed;
+                }
+            }
+            Event::RevisionDated {
+                flake,
+                rev,
+                last_modified,
+            } => {
+                for h in &mut self.hosts {
+                    let runs_it = h.host.flake == flake
+                        && h.report().and_then(|r| r.revision.as_deref()) == Some(rev.as_str());
+                    if runs_it {
+                        h.deployed = Some(DeployedRev {
+                            flake: flake.clone(),
+                            rev: Some(rev.clone()),
+                            last_modified: Some(last_modified),
+                        });
+                    }
                 }
             }
             Event::EvalStarted(id) => {
@@ -722,6 +757,7 @@ mod tests {
         Desired {
             path: path(c),
             rev: Some("rev-new".into()),
+            last_modified: None,
             cached: false,
         }
     }
@@ -843,7 +879,8 @@ mod tests {
             Some(Drift::Revision {
                 rev: "rev-old".into(),
                 last_modified: None,
-                from_generation: true
+                from_generation: true,
+                newer_by: None,
             })
         );
         s.apply(
@@ -863,11 +900,72 @@ mod tests {
             Some(Drift::Revision {
                 rev: "rev-cached".into(),
                 last_modified: Some(7),
-                from_generation: false
+                from_generation: false,
+                newer_by: None,
             })
         );
         evaluated(&mut s, 0, Ok(desired('a')));
         assert_eq!(s.hosts[0].drift(), None);
+    }
+
+    #[test]
+    fn a_dated_revision_tells_newer_from_older() {
+        let mut s = AppState::new(vec![host("a", "f"), host("b", "other"), host("c", "f")]);
+        for id in 0..3 {
+            evaluated(
+                &mut s,
+                id,
+                Ok(Desired {
+                    last_modified: Some(1000),
+                    ..desired('z')
+                }),
+            );
+        }
+        for (id, rev) in [(0, "rev-x"), (1, "rev-x"), (2, "rev-y")] {
+            probed(
+                &mut s,
+                id,
+                Ok(ProbeReport {
+                    revision: Some(rev.into()),
+                    ..report('a')
+                }),
+            );
+        }
+        let dated = |s: &mut AppState, rev: &str, at| {
+            s.apply(
+                Event::RevisionDated {
+                    flake: "f".into(),
+                    rev: rev.into(),
+                    last_modified: at,
+                },
+                Instant::now(),
+            );
+        };
+        dated(&mut s, "rev-x", 1600);
+        let revision = |s: &AppState, id: usize| match s.hosts[id].drift() {
+            Some(Drift::Revision {
+                last_modified,
+                newer_by,
+                ..
+            }) => (last_modified, newer_by),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(revision(&s, 0), (Some(1600), Some(600)));
+        // Only the hosts of that flake running that revision.
+        assert_eq!(revision(&s, 1), (None, None));
+        assert_eq!(revision(&s, 2), (None, None));
+        dated(&mut s, "rev-y", 400);
+        assert_eq!(revision(&s, 2), (Some(400), None), "older");
+        // A probe that now finds another revision drops the old date.
+        probed(
+            &mut s,
+            0,
+            Ok(ProbeReport {
+                revision: Some("rev-y".into()),
+                ..report('a')
+            }),
+        );
+        assert_eq!(revision(&s, 0), (None, None));
     }
 
     #[test]
@@ -1141,11 +1239,12 @@ mod tests {
             rev: "abc".into(),
             last_modified: Some(1),
             from_generation: true,
+            newer_by: Some(60),
         })
         .unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"type": "revision", "rev": "abc", "lastModified": 1, "fromGeneration": true})
+            serde_json::json!({"type": "revision", "rev": "abc", "lastModified": 1, "fromGeneration": true, "newerBy": 60})
         );
     }
 

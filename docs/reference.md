@@ -126,7 +126,11 @@ From most to least urgent (the order `s` sorts by):
 
 **Drift** says why an outdated host differs: `on <rev> (<age> old)` (the
 revision it runs, recorded by the generation itself as `configurationRevision`
-or remembered by hostctl from an earlier check), `same rev, different build`
+or remembered by hostctl from an earlier check), `on <rev> (<age> newer)` (a
+commit later than the compared one, such as a branch being tried out:
+activating would go back, so the `update:` suggestion leaves the host out;
+hostctl looks up when a recorded revision was committed once, with `nix flake
+metadata`, unless `--offline`), `same rev, different build`
 (activated from a reference without `rev`, or with overridden inputs), `staged`
 (the profile already points at the desired generation; a switch or reboot is
 pending) or `unknown generation` (not built from a revision hostctl has
@@ -364,7 +368,7 @@ else is passed through and left to `hostctl config check`.
       "flake": "github:you/nix-config",
       "attr": "nixosConfigurations.desk.config.system.build.toplevel",
       "status": "outdated",
-      "drift": { "type": "revision", "rev": "1a2b3c4…", "lastModified": 1791980811, "fromGeneration": false },
+      "drift": { "type": "revision", "rev": "1a2b3c4…", "lastModified": 1791980811, "fromGeneration": false, "newer": false },
       "current": "/nix/store/ykn4vz9v…-nixos-system-desk",
       "desired": "/nix/store/wqnds0yy…-nixos-system-desk",
       "cached": true,
@@ -389,9 +393,9 @@ else is passed through and left to `hostctl config check`.
 `"local"`, `"assumed"` or `null` (remote). `drift` is `null` unless the host
 is outdated; its `type` is `revision`, `same-revision`, `staged` or `unknown`,
 and a `revision` drift also has the deployed `rev`, its `lastModified` (`null`
-unless hostctl's cache knows it) and `fromGeneration` (`true` when the
-generation records the revision itself, `false` when hostctl's cache
-remembered it). `activate` is `null` when hostctl has no activation for the
+unless hostctl knows it), `fromGeneration` (`true` when the generation records
+the revision itself, `false` when hostctl's cache remembered it) and `newer`
+(`true` when it was committed after the compared revision). `activate` is `null` when hostctl has no activation for the
 host, else the exact `command` and where it runs, `runsOn`: `"here"` (this
 machine) or `"remote"` (on the host, over ssh). `error` is `{ "summary",
 "detail" }`. `activated` and `lastModified` are Unix seconds. `hostctl diff

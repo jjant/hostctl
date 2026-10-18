@@ -965,6 +965,7 @@ mod tests {
         Desired {
             path: path(c),
             rev: Some("4".repeat(40)),
+            last_modified: None,
             cached: false,
         }
     }

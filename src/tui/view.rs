@@ -1320,10 +1320,14 @@ fn error_detail(t: Theme, e: &ErrorInfo, width: usize, out: &mut Vec<Line<'stati
 fn drift_short(drift: &Drift, now_unix: i64) -> String {
     match drift {
         Drift::Revision {
-            rev, last_modified, ..
-        } => match last_modified {
-            Some(at) => format!("on {} ({} old)", short_rev(rev), age(*at, now_unix)),
-            None => format!("on {}", short_rev(rev)),
+            rev,
+            last_modified,
+            newer_by,
+            ..
+        } => match (newer_by, last_modified) {
+            (Some(by), _) => format!("on {} ({} newer)", short_rev(rev), age(0, *by)),
+            (None, Some(at)) => format!("on {} ({} old)", short_rev(rev), age(*at, now_unix)),
+            (None, None) => format!("on {}", short_rev(rev)),
         },
         Drift::SameRevision => "same rev, different build".into(),
         Drift::Staged => "staged: switch/reboot pending".into(),
@@ -3891,6 +3895,7 @@ mod tests {
             rev: "1a2b3c4d5e6f".into(),
             last_modified: Some(NOW_UNIX - 3 * 86_400),
             from_generation,
+            newer_by: None,
         };
         assert_eq!(
             drift_long(&revision(true), NOW_UNIX),
@@ -3989,7 +3994,8 @@ mod tests {
                 &Drift::Revision {
                     rev: "1a2b3c4d".into(),
                     last_modified: None,
-                    from_generation: true
+                    from_generation: true,
+                    newer_by: None,
                 },
                 NOW_UNIX
             ),

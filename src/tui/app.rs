@@ -995,6 +995,7 @@ pub(super) mod testing {
         Desired {
             path,
             rev: Some(REV.into()),
+            last_modified: None,
             cached,
         }
     }

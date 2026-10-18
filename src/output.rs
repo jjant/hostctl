@@ -299,10 +299,16 @@ fn drift_text(drift: &Drift, now_unix: i64) -> Cow<'static, str> {
         Drift::SameRevision => "same rev, different build".into(),
         Drift::Unknown => "unknown generation".into(),
         Drift::Revision {
-            rev, last_modified, ..
-        } => match last_modified {
-            Some(at) => format!("on {} ({} old)", short_rev(rev), age(*at, now_unix)).into(),
-            None => format!("on {}", short_rev(rev)).into(),
+            rev,
+            last_modified,
+            newer_by,
+            ..
+        } => match (newer_by, last_modified) {
+            (Some(by), _) => format!("on {} ({} newer)", short_rev(rev), age(0, *by)).into(),
+            (None, Some(at)) => {
+                format!("on {} ({} old)", short_rev(rev), age(*at, now_unix)).into()
+            }
+            (None, None) => format!("on {}", short_rev(rev)).into(),
         },
     }
 }
@@ -397,7 +403,15 @@ fn footer<'a>(state: &'a AppState, rows: &[Row<'_>]) -> Vec<Line<'a>> {
     let mut names = String::new();
     let mut option_like = false;
     for (h, row) in state.hosts.iter().zip(rows) {
-        if row.status.needs_activation() && activation(state, h).is_some() {
+        // A host on a newer commit would go back.
+        let newer = matches!(
+            h.drift(),
+            Some(Drift::Revision {
+                newer_by: Some(_),
+                ..
+            })
+        );
+        if row.status.needs_activation() && !newer && activation(state, h).is_some() {
             let name = one_line(&h.host.name);
             option_like |= name.starts_with('-');
             names.push(' ');
@@ -609,6 +623,7 @@ fn drift_json<S: serde::Serializer>(
             rev: &'a str,
             last_modified: Option<i64>,
             from_generation: bool,
+            newer: bool,
         },
         Unknown,
     }
@@ -619,10 +634,12 @@ fn drift_json<S: serde::Serializer>(
             rev,
             last_modified,
             from_generation,
+            newer_by,
         } => Json::Revision {
             rev,
             last_modified: *last_modified,
             from_generation: *from_generation,
+            newer: newer_by.is_some(),
         },
         Drift::Unknown => Json::Unknown,
     });
@@ -636,10 +653,12 @@ fn clean_drift(drift: Drift) -> Drift {
             rev,
             last_modified,
             from_generation,
+            newer_by,
         } => Drift::Revision {
             rev: clean(&rev),
             last_modified,
             from_generation,
+            newer_by,
         },
         other => other,
     }
@@ -1280,6 +1299,7 @@ mod tests {
             let result = Ok(Desired {
                 path: sp(path),
                 rev: Some(REV.into()),
+                last_modified: None,
                 cached: true,
             });
             self.apply(300, Event::EvalFinished { id, result });
@@ -1336,6 +1356,7 @@ mod tests {
         Ok(Desired {
             path: sp(path),
             rev: Some(REV.into()),
+            last_modified: None,
             cached: false,
         })
     }
@@ -2289,7 +2310,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
             aarch64["drift"],
             serde_json::json!({
                 "type": "revision", "rev": OLD_REV, "lastModified": NOW - 4 * MONTH - 9 * DAY,
-                "fromGeneration": false
+                "fromGeneration": false, "newer": false
             })
         );
         assert_eq!(aarch64["current"], HM_1);
@@ -2365,7 +2386,8 @@ update: hostctl activate al2-aarch64 al2-x86_64
         assert_eq!(
             reboot["drift"],
             serde_json::json!({
-                "type": "revision", "rev": OLD_REV, "lastModified": null, "fromGeneration": true
+                "type": "revision", "rev": OLD_REV, "lastModified": null, "fromGeneration": true,
+                "newer": false
             })
         );
         assert_eq!(

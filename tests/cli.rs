@@ -859,7 +859,7 @@ fn the_json_report_has_every_field() {
     assert_eq!(web2["revision"], REV2);
     assert_eq!(
         web2["drift"],
-        json!({ "type": "revision", "rev": REV2, "lastModified": null, "fromGeneration": true })
+        json!({ "type": "revision", "rev": REV2, "lastModified": null, "fromGeneration": true, "newer": false })
     );
 
     let web3 = by_name("web3");
@@ -1262,6 +1262,38 @@ fn offline_evaluates_nothing_the_cache_lacks() {
 }
 
 #[test]
+fn a_host_on_a_newer_commit_says_so_and_is_left_out_of_the_update() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    // web1 runs a generation of REV2, an hour newer than REV1; web2 is
+    // just behind.
+    home_host(&w, "web1", &hm('b'), &hm('a')).revision(&hm('b'), REV2);
+    home_host(&w, "web2", &hm('c'), &hm('d'));
+    let dated = w.flake_at(&format!("{FLAKE}/{REV2}"), REV2);
+    let mut metadata: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dated.0).unwrap()).unwrap();
+    metadata["lastModified"] = json!(now() - 3600 - 60);
+    std::fs::write(&dated.0, metadata.to_string()).unwrap();
+
+    let run = w.run(&["status", "--plain"]);
+    run.code(1);
+    assert_eq!(
+        table(&run),
+        "github:o/r @ 1111111 (2h ago)\n\
+         \n  web1  ✗ outdated  gen 5 · 3d ago · on 2222222 (1h newer)\
+         \n  web2  ✗ outdated  gen 5 · 3d ago · unknown generation\n\
+         \n2 outdated · <took>\nupdate: hostctl activate web2\n"
+    );
+    let lookups = || w.nix_calls(&format!("{FLAKE}/{REV2}"));
+    assert_eq!(lookups().len(), 1, "{}", w.log());
+    let json = w.run(&["status", "--json"]).json();
+    assert_eq!(json["hosts"][0]["drift"]["newer"], true);
+    // The cache remembers the date.
+    assert_eq!(lookups().len(), 1, "{}", w.log());
+}
+
+#[test]
 fn the_cache_remembers_which_revision_a_host_runs() {
     let w = World::new();
     w.flake(REV1);
@@ -1288,7 +1320,7 @@ fn the_cache_remembers_which_revision_a_host_runs() {
     let json = w.run(&["status", "--json"]).json();
     assert_eq!(
         json["hosts"][0]["drift"],
-        json!({ "type": "revision", "rev": REV1, "lastModified": modified, "fromGeneration": false })
+        json!({ "type": "revision", "rev": REV1, "lastModified": modified, "fromGeneration": false, "newer": false })
     );
 }
 
