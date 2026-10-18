@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use crate::closure::ClosureEntry;
 use crate::config::{ActivateOn, Host, Kind, Target};
 use crate::nix::{FEATURES, FlakeInfo};
-use crate::remote::{PATH_PRELUDE, sh_quote};
+use crate::remote::{NIX_PRELUDE, sh_quote};
 use crate::storepath::StorePath;
 
 /// Cap on a closure listing's captured output.
@@ -221,7 +221,7 @@ pub fn build_command(host: &Host, flake: &FlakeInfo) -> Result<String, String> {
     ))
 }
 
-/// The fixed part of [`closure_script`], after the PATH prelude.
+/// The fixed part of [`closure_script`], after the Nix prelude.
 ///
 /// `closure PATH OUT` writes PATH's listing to OUT. It runs as one
 /// background job per requested path, so the closures are read
@@ -268,7 +268,7 @@ closure() {
 /// @end
 /// ```
 ///
-/// Starts with [`PATH_PRELUDE`]; uses only `nix-store -qR` and `nix-store
+/// Starts with [`NIX_PRELUDE`]; uses only `nix-store -qR` and `nix-store
 /// -q --size` (any Nix version, no experimental features), one size query
 /// per closure (via `xargs`, order preserved), and checks that sizes and
 /// paths line up; `nix-store --check-validity --print-invalid` tells a
@@ -277,8 +277,8 @@ closure() {
 /// `nix-store` is missing or fails unexpectedly, and then prints no `@end`.
 pub fn closure_script(paths: &[&StorePath]) -> String {
     let mut script =
-        String::with_capacity(PATH_PRELUDE.len() + CLOSURE_SCRIPT.len() + 128 * paths.len() + 16);
-    script.push_str(PATH_PRELUDE);
+        String::with_capacity(NIX_PRELUDE.len() + CLOSURE_SCRIPT.len() + 128 * paths.len() + 16);
+    script.push_str(NIX_PRELUDE);
     script.push('\n');
     script.push_str(CLOSURE_SCRIPT);
     for (i, path) in paths.iter().enumerate() {
@@ -1076,7 +1076,7 @@ mod tests {
         let (a, odd) = (store_path(1, "a"), store_path(2, "odd?name=1"));
         let script = closure_script(&[&a, &odd]);
         assert!(
-            script.starts_with(&format!("{PATH_PRELUDE}\nset -u\n")),
+            script.starts_with(&format!("{NIX_PRELUDE}\nset -u\n")),
             "{script}"
         );
         let first = script

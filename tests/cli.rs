@@ -6,6 +6,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
+use hostctl::remote::NIX_PRELUDE;
 use serde_json::{Value, json};
 
 /// Discovery finds these home-manager configurations.
@@ -1920,14 +1921,11 @@ fn diff_build_builds_the_new_generation_on_the_host_first() {
     assert_eq!(run.json()["diff"]["pathsAfter"], 4);
     assert_eq!(
         w.host("web1").interactive_script().unwrap(),
-        format!("rm -f \"$0\"\n{PATH_PRELUDE}\n{command}\n")
+        format!("rm -f \"$0\"\n{NIX_PRELUDE}\n{command}\n")
     );
 }
 
 // ─── activate ───────────────────────────────────────────────────────────
-
-/// What every command run on a host or interactively starts with.
-const PATH_PRELUDE: &str = r#"PATH="/run/wrappers/bin:$PATH:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:$HOME/.nix-profile/bin:${XDG_STATE_HOME:-$HOME/.local/state}/nix/profile/bin:/etc/profiles/per-user/${USER:-${LOGNAME:-}}/bin"; export PATH"#;
 
 /// web1 runs generation 5, `hm('a')`; generation 6, `hm('b')`, is the
 /// desired one and is built. Its activation switches the profile.
@@ -1970,7 +1968,7 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
     assert_eq!(run.stderr, "");
 
     // Probe; upload (over the unattended channel); the run, with a
-    // terminal, of exactly that command after the PATH prelude; probe again.
+    // terminal, of exactly that command after the Nix prelude; probe again.
     let calls = w.ssh_calls("web1");
     let commands: Vec<&str> = calls.iter().map(Call::remote_command).collect();
     assert_eq!(commands.len(), 4, "{}", w.log());
@@ -1991,7 +1989,7 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
     );
     assert_eq!(
         host.interactive_script().unwrap(),
-        format!("rm -f \"$0\"\n{PATH_PRELUDE}\n{command}\n")
+        format!("rm -f \"$0\"\n{NIX_PRELUDE}\n{command}\n")
     );
     assert!(
         !std::path::Path::new(uploaded).exists(),

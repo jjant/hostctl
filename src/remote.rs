@@ -123,12 +123,21 @@ pub fn sh_quote(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Prepended to every remote/interactive script that needs Nix: non-login
-/// sessions often lack it on `PATH` (`sh -l` doesn't help on some systems).
-/// The Nix directories are appended, so the session's own choices win;
-/// `/run/wrappers/bin` goes first because NixOS's setuid `sudo` lives there
-/// and the plain copy in `sw/bin` refuses to run.
-pub const PATH_PRELUDE: &str = r#"PATH="/run/wrappers/bin:$PATH:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:$HOME/.nix-profile/bin:${XDG_STATE_HOME:-$HOME/.local/state}/nix/profile/bin:/etc/profiles/per-user/${USER:-${LOGNAME:-}}/bin"; export PATH"#;
+/// Prepended to every remote/interactive script that needs Nix, for what
+/// Nix's profile scripts would have set in a login session:
+/// - `PATH`: non-login sessions often lack Nix on it (`sh -l` doesn't help
+///   on some systems). The Nix directories are appended, so the session's
+///   own choices win; `/run/wrappers/bin` goes first because NixOS's setuid
+///   `sudo` lives there and the plain copy in `sw/bin` refuses to run;
+/// - `NIX_SSL_CERT_FILE`, unless set: the first CA bundle that exists, in
+///   those scripts' order. Without it Nix only looks for
+///   `/etc/ssl/certs/ca-certificates.crt`, so it can't fetch anything on
+///   systems that keep theirs elsewhere (Amazon Linux, Fedora).
+pub const NIX_PRELUDE: &str = concat!(
+    r#"PATH="/run/wrappers/bin:$PATH:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:$HOME/.nix-profile/bin:${XDG_STATE_HOME:-$HOME/.local/state}/nix/profile/bin:/etc/profiles/per-user/${USER:-${LOGNAME:-}}/bin"; export PATH"#,
+    "\n",
+    r#"if [ -z "${NIX_SSL_CERT_FILE:-}" ]; then for hostctl_ca in /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem /etc/ssl/certs/ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt /nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt "$HOME/.nix-profile/etc/ssl/certs/ca-bundle.crt"; do if [ -e "$hostctl_ca" ]; then NIX_SSL_CERT_FILE=$hostctl_ca; export NIX_SSL_CERT_FILE; break; fi; done; unset hostctl_ca; fi"#,
+);
 
 /// A parsed ssh destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,13 +506,13 @@ pub fn exit_master_command(
 }
 
 /// The body of an interactive script: deletes itself (`$0`) when it was
-/// uploaded, sets [`PATH_PRELUDE`], then runs `command`.
+/// uploaded, sets [`NIX_PRELUDE`], then runs `command`.
 pub fn interactive_script(command: &str, uploaded: bool) -> String {
     let mut script = String::new();
     if uploaded {
         script.push_str("rm -f \"$0\"\n");
     }
-    script.push_str(PATH_PRELUDE);
+    script.push_str(NIX_PRELUDE);
     script.push('\n');
     script.push_str(command);
     script.push('\n');
@@ -1440,6 +1449,48 @@ mod tests {
             "{seen}"
         );
         assert!(!seen.contains('$'), "{seen}");
+    }
+
+    #[test]
+    fn the_prelude_finds_a_ca_bundle_unless_one_is_set() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join(".nix-profile/etc/ssl/certs");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("ca-bundle.crt"), "").unwrap();
+        let candidates = [
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/ssl/ca-bundle.pem",
+            "/etc/ssl/certs/ca-bundle.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt",
+        ];
+        // The first that exists here, else the one in this $HOME's profile.
+        let expected = candidates
+            .iter()
+            .find(|f| Path::new(f).exists())
+            .map_or_else(
+                || profile.join("ca-bundle.crt").display().to_string(),
+                ToString::to_string,
+            );
+        let ca_file = |set: Option<&str>| {
+            // Like a non-login ssh session.
+            let mut cmd = std::process::Command::new("/bin/sh");
+            cmd.arg("-c")
+                .arg(format!(
+                    "{NIX_PRELUDE}\nprintf '%s|%s' \"$NIX_SSL_CERT_FILE\" \"${{hostctl_ca-unset}}\""
+                ))
+                .env_clear()
+                .env("HOME", home.path())
+                .env("PATH", "/usr/bin:/bin");
+            if let Some(set) = set {
+                cmd.env("NIX_SSL_CERT_FILE", set);
+            }
+            let out = cmd.output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert_eq!(ca_file(None), format!("{expected}|unset"));
+        assert_eq!(ca_file(Some("/mine.pem")), "/mine.pem|unset");
     }
 
     #[test]

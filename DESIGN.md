@@ -139,7 +139,7 @@ Warm `hostctl status` ≈ max(metadata-or-cached ≤ 0.3 s, slowest probe ≈ 0.
 | `config`    | TOML schema, loading, overrides, validation, resolution into `Host`s           |
 | `local`     | which hosts are this machine                                                   |
 | `probe`     | builtin POSIX-sh probe script + framed output parser                           |
-| `remote`    | `CommandSpec`, quoting, ssh argv (mux, destinations), PATH prelude             |
+| `remote`    | `CommandSpec`, quoting, ssh argv (mux, destinations), Nix prelude              |
 | `exec`      | process runner (setsid, process-group kill, caps), interactive runner          |
 | `nix`       | nix command builders, metadata/eval/inventory parsing, stderr cleanup          |
 | `cache`     | on-disk cache: out paths, resolutions, inventories, eval hints, reverse lookup |
@@ -228,11 +228,17 @@ failures get hints (unresolvable host, BatchMode auth failure, changed host
 key, `RemoteCommand` in ssh config).
 
 Remote commands that need Nix (closure listing, builds, activation) start with a
-**PATH prelude** — `/run/wrappers/bin` prepended (NixOS's setuid `sudo` must win),
-then appended `/nix/var/nix/profiles/default/bin`, `/run/current-system/sw/bin`,
-`$HOME/.nix-profile/bin`, `${XDG_STATE_HOME:-$HOME/.local/state}/nix/profile/bin`,
-`/etc/profiles/per-user/$USER/bin` — because non-login sessions often lack Nix,
-and `sh -l` doesn't always add it.
+**Nix prelude**, for what Nix's profile scripts set in a login session, because
+non-login sessions often lack it and `sh -l` doesn't always add it:
+
+- `PATH`: `/run/wrappers/bin` prepended (NixOS's setuid `sudo` must win), then
+  appended `/nix/var/nix/profiles/default/bin`, `/run/current-system/sw/bin`,
+  `$HOME/.nix-profile/bin`, `${XDG_STATE_HOME:-$HOME/.local/state}/nix/profile/bin`,
+  `/etc/profiles/per-user/$USER/bin`;
+- `NIX_SSL_CERT_FILE`, unless set: the first CA bundle that exists, in the
+  profile scripts' order. Nix alone only looks for
+  `/etc/ssl/certs/ca-certificates.crt`, so on Amazon Linux or Fedora a build
+  on the host couldn't fetch the flake.
 
 Destinations are validated strictly (no shell metacharacters, controls, leading
 `-` in user or host, `host:port` only inside `ssh://`). hostctl drops one of its
@@ -341,7 +347,7 @@ configured, `{rev}`, `{name}`, `{attr}`, `{out}` desired store path,
 `colmena apply --on {name}` with `activate-on = "local"`. `activate = ""` or
 `false` disables.
 
-Remote execution is shell-agnostic: the command (PATH prelude + template) is
+Remote execution is shell-agnostic: the command (Nix prelude + template) is
 uploaded over the unattended channel — inside the `sh -s` program as a quoted
 here-document, so the login shell only ever parses `sh -s` — into a private temp
 file (`umask 077; mktemp`), then run with `ssh -t … sh <path>` (the script
