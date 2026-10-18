@@ -681,14 +681,14 @@ fn speculate(setup: &Setup, engine: &Engine, check: &Check) -> Option<Selection>
 /// Discovery beside a check of hosts from the cache ([`speculate`]): what
 /// the hosts are now, found as [`dispatch`] finds them —
 /// [`live::Confirmed::Same`], or a check to start over with — or why there
-/// are none to check. `diff`: the pattern of a diff, which needs exactly
-/// one host. Warnings go to `deferred`, to be printed once the check is
-/// done rather than into its table.
+/// are none to check (a diff needs exactly one host). Warnings go to
+/// `deferred`, to be printed once the check is done rather than into its
+/// table.
 async fn confirm_hosts(
     setup: &Setup,
     engine: &Engine,
     patterns: &[String],
-    diff: Option<&str>,
+    purpose: Purpose<'_>,
     speculative: &[(HostId, Host)],
     deferred: &std::cell::RefCell<Vec<String>>,
 ) -> Result<Confirmed, Exit> {
@@ -707,17 +707,27 @@ async fn confirm_hosts(
         known,
         speculative: false,
     };
-    if let Some(pattern) = diff {
+    if let Purpose::Diff(pattern) = purpose {
         one_host(&selection.hosts, pattern)?;
     }
     deferred
         .borrow_mut()
         .extend(warning.into_iter().chain(warnings));
     Ok(Confirmed::Changed(Box::new(Recheck {
-        state: selection.state(setup),
+        state: selection.state(setup, purpose),
         hosts: selection.hosts,
         known: selection.known,
     })))
+}
+
+/// What a check is for.
+#[derive(Debug, Clone, Copy)]
+enum Purpose<'a> {
+    Status,
+    /// A diff of the one host this pattern names.
+    Diff(&'a str),
+    /// Activations: the table doesn't suggest them again.
+    Activate,
 }
 
 /// [`live::check`] of `selection` — with [`confirm_hosts`] beside it when
@@ -727,19 +737,19 @@ async fn check_selection(
     engine: &Engine,
     selection: &Selection,
     patterns: &[String],
-    diff: Option<&str>,
+    purpose: Purpose<'_>,
     display: Display,
     signals: &mut Signals,
 ) -> Result<AppState, Exit> {
     let trouble = |e: anyhow::Error| Exit::Trouble(format!("{e:#}"));
     let (hosts, known) = (&selection.hosts, &selection.known);
-    let state = selection.state(setup);
+    let state = selection.state(setup, purpose);
     if !selection.speculative {
         let checked = live::check(engine, state, hosts, known, display, signals, setup.started);
         return checked.await.map_err(trouble);
     }
     let deferred = std::cell::RefCell::new(Vec::new());
-    let confirmed = confirm_hosts(setup, engine, patterns, diff, hosts, &deferred);
+    let confirmed = confirm_hosts(setup, engine, patterns, purpose, hosts, &deferred);
     let started = setup.started;
     let checked = live::check_confirming(
         engine, state, hosts, known, display, signals, started, confirmed,
@@ -929,11 +939,12 @@ struct Selection {
 }
 
 impl Selection {
-    fn state(&self, setup: &Setup) -> AppState {
+    fn state(&self, setup: &Setup, purpose: Purpose<'_>) -> AppState {
         let hosts = self.hosts.iter().map(|(_, host)| host.clone()).collect();
         let mut state = AppState::new(hosts).with_flakes(&self.known, Instant::now());
         state.config_path.clone_from(&setup.path);
         state.command.clone_from(&setup.command);
+        state.suggest_activate = !matches!(purpose, Purpose::Activate);
         state
     }
 }
@@ -954,7 +965,15 @@ async fn status(
     } else {
         Display::Progress
     };
-    let checked = check_selection(setup, engine, selection, patterns, None, display, signals);
+    let checked = check_selection(
+        setup,
+        engine,
+        selection,
+        patterns,
+        Purpose::Status,
+        display,
+        signals,
+    );
     let state = checked.await?;
     if json {
         print_json(&output::status_report(&state))?;
@@ -980,7 +999,7 @@ async fn diff(
         engine,
         selection,
         &patterns,
-        Some(pattern),
+        Purpose::Diff(pattern),
         Display::Progress,
         signals,
     );
@@ -1252,7 +1271,15 @@ async fn activate(
     } else {
         Display::Progress
     };
-    let checked = check_selection(setup, engine, selection, patterns, None, display, signals);
+    let checked = check_selection(
+        setup,
+        engine,
+        selection,
+        patterns,
+        Purpose::Activate,
+        display,
+        signals,
+    );
     let mut state = checked.await?;
     if !redraw {
         print(&output::status_table(&state, style, None, util::now_unix()))?;
@@ -1290,10 +1317,7 @@ async fn activate(
         let host = state.hosts[id].host.clone();
         let name = util::one_line(&host.name).into_owned();
         attempted += 1;
-        print(&format!(
-            "\n==> activating {name} {}\n",
-            runs_on(&host, activation.runs_on)
-        ))?;
+        print(&format!("\n{}\n", activating(&host, activation, style)))?;
         let label = format!("preparing the activation of {name}");
         let prepared = live::wait_for(
             &label,
@@ -1325,7 +1349,7 @@ async fn activate(
         if h.status() == Status::UpToDate {
             up_to_date += 1;
         }
-        print(&outcome_text(h, &ran))?;
+        print(&outcome_text(h, &ran, &activation.command, style))?;
         if ran.as_ref().is_ok_and(was_interrupted) {
             let rest: Vec<_> = plan[n + 1..]
                 .iter()
@@ -1428,32 +1452,47 @@ fn activation_of(state: &AppState, id: HostId) -> Result<Activation, String> {
     Ok(activation)
 }
 
-/// `<name>: <command>` (continuation lines indented), then where it runs
-/// and any warning.
+/// What to know before activating `host`, if anything: the command when
+/// hostctl didn't write it (a template from the config or the flake's
+/// inventory; continuation lines indented), that it runs here rather than
+/// on the host, and any warning. hostctl's own commands are shown only if
+/// they fail (and in `status --json`).
 fn plan_text(host: &Host, activation: &Activation) -> String {
-    let mut text = format!(
-        "{}: {}\n  runs {}\n",
-        util::one_line(&host.name),
-        command_text(&activation.command, ""),
-        runs_on(host, activation.runs_on)
-    );
+    let name = util::one_line(&host.name);
+    let mut text = String::new();
+    if host.activate.as_deref() != host.kind.default_activate() {
+        text.push_str(&format!(
+            "{name}: {}\n",
+            command_text(&activation.command, "")
+        ));
+    }
+    if runs_elsewhere(host, activation) {
+        text.push_str(&format!("{name}: activated from here\n"));
+    }
     if let Some(warning) = &activation.warning {
-        text.push_str(&format!("  warning: {}\n", util::one_line(warning)));
+        text.push_str(&format!("{name}: warning: {}\n", util::one_line(warning)));
     }
     text
 }
 
-/// `here`, or `on <host> (<destination>)` (the destination only when it
-/// says more than the name).
-fn runs_on(host: &Host, runs_on: RunsOn) -> String {
-    let name = util::one_line(&host.name);
-    match (runs_on, host.ssh()) {
-        (RunsOn::Here, _) => "here".into(),
-        (RunsOn::Remote, Some(ssh)) if ssh.destination != host.name => {
-            format!("on {name} ({})", util::one_line(&ssh.destination))
-        }
-        (RunsOn::Remote, _) => format!("on {name}"),
-    }
+/// A remote host's activation runs on this machine (`activate-on =
+/// "local"`).
+fn runs_elsewhere(host: &Host, activation: &Activation) -> bool {
+    activation.runs_on == RunsOn::Here && host.ssh().is_some()
+}
+
+/// `==> activating <name>` (` from here` when it runs here for a remote
+/// host), in bold.
+fn activating(host: &Host, activation: &Activation, style: Style) -> String {
+    let from = if runs_elsewhere(host, activation) {
+        " from here"
+    } else {
+        ""
+    };
+    output::bold(
+        style,
+        &format!("==> activating {}{from}", util::one_line(&host.name)),
+    )
 }
 
 /// Why `activate` has nothing to do.
@@ -1490,27 +1529,51 @@ fn nothing_to_activate(state: &AppState) -> String {
     }
 }
 
-/// The result of one activation, after its host was probed again.
-fn outcome_text(h: &HostState, ran: &io::Result<ExitStatus>) -> String {
+/// The result of one activation of `command`, after its host was probed
+/// again: its status, and why the activation failed (with the command it
+/// ran) if it did.
+fn outcome_text(
+    h: &HostState,
+    ran: &io::Result<ExitStatus>,
+    command: &str,
+    style: Style,
+) -> String {
     let name = util::one_line(&h.host.name);
-    let mut text = match ran {
-        Ok(status) if status.success() => String::new(),
-        Ok(status) => format!(
-            "{name}: the activation failed ({})\n",
-            exit_status_text(status)
-        ),
-        Err(e) => format!("{name}: can't run the activation: {e}\n"),
-    };
     let status = h.status();
-    match (status, h.probe.get()) {
-        (Status::UpToDate, _) => text.push_str(&format!("✓ {name} is up to date\n")),
-        (_, Some(Err(failure))) => text.push_str(&format!(
-            "{} {name}: {}: {}\n",
-            status.icon(),
-            status.label(),
-            util::one_line(&failure.error.summary)
+    let icon = output::status_icon(style, status);
+    let failed = match ran {
+        Ok(exit) if exit.success() => None,
+        Ok(exit) => Some(format!(
+            "the activation failed ({})",
+            exit_status_text(exit)
         )),
-        _ => text.push_str(&format!("{} {name} is {}\n", status.icon(), status.label())),
+        Err(e) => Some(format!("can't run the activation: {e}")),
+    };
+    let mut text = match (status, h.probe.get(), &failed) {
+        (Status::UpToDate, _, None) => format!("{icon} {name} is up to date\n"),
+        (Status::UpToDate, _, Some(failed)) => {
+            format!("{icon} {name} is up to date, but {failed}\n")
+        }
+        (_, Some(Err(failure)), _) => {
+            let probe = format!(
+                "{icon} {name}: {}: {}\n",
+                status.label(),
+                util::one_line(&failure.error.summary)
+            );
+            match &failed {
+                Some(failed) => format!("{name}: {failed}\n{probe}"),
+                None => probe,
+            }
+        }
+        (_, _, Some(failed)) => format!("{icon} {name}: {failed}\n"),
+        (_, _, None) => format!("{icon} {name} is still {}\n", status.label()),
+    };
+    if matches!(ran, Ok(exit) if !exit.success()) {
+        text.push_str(&output::dim(
+            style,
+            &format!("  it ran: {}", command_text(command, "  ")),
+        ));
+        text.push('\n');
     }
     text
 }
@@ -2289,7 +2352,9 @@ mod tests {
             flake_here: false,
             started: Instant::now(),
         };
-        let state = selection.state(&setup);
+        let state = selection.state(&setup, Purpose::Status);
+        assert!(state.suggest_activate);
+        assert!(!selection.state(&setup, Purpose::Activate).suggest_activate);
         assert_eq!(state.hosts.len(), 2);
         assert_eq!(
             state.config_path.as_deref(),
@@ -2542,9 +2607,30 @@ mod tests {
         let activation = activation_of(&state, 0).unwrap();
         assert_eq!(activation.runs_on, RunsOn::Remote);
         assert!(activation.command.contains(store('b').as_str()));
+        // hostctl's own command needn't be shown before asking.
+        assert_eq!(plan_text(&state.hosts[0].host, &activation), "");
+        let mut custom = state.hosts[0].host.clone();
+        custom.activate = Some("nix run {flake}#activate".into());
+        custom.activate_on = ActivateOn::Local;
+        let local = Activation {
+            runs_on: RunsOn::Here,
+            warning: Some("the flake is a dirty tree".into()),
+            ..activation.clone()
+        };
         assert_eq!(
-            plan_text(&state.hosts[0].host, &activation),
-            format!("a: {}\n  runs on a\n", activation.command)
+            plan_text(&custom, &local),
+            format!(
+                "a: {}\na: activated from here\na: warning: the flake is a dirty tree\n",
+                activation.command
+            )
+        );
+        assert_eq!(
+            activating(&custom, &local, Style { color: false }),
+            "==> activating a from here"
+        );
+        assert_eq!(
+            activating(&state.hosts[0].host, &activation, Style { color: true }),
+            "\x1b[1m==> activating a\x1b[0m"
         );
 
         evaluated(&mut state, 1, Err(ErrorInfo::msg("attribute 'b' missing")));
@@ -2561,17 +2647,11 @@ mod tests {
     }
 
     #[test]
-    fn where_activations_run() {
+    fn where_builds_run() {
         let mut desk = host("desk");
         if let Target::Ssh(ssh) = &mut desk.target {
             ssh.destination = "jj@desk.example.com".into();
         }
-        assert_eq!(
-            runs_on(&desk, RunsOn::Remote),
-            "on desk (jj@desk.example.com)"
-        );
-        assert_eq!(runs_on(&host("web1"), RunsOn::Remote), "on web1");
-        assert_eq!(runs_on(&desk, RunsOn::Here), "here");
         assert_eq!(build_place(&local("bigmem", false)), "here");
         assert_eq!(build_place(&desk), "on desk");
         let mut pushed = host("web2");
@@ -2584,19 +2664,29 @@ mod tests {
         let mut state = checked(vec![host("a"), host("b"), host("c")]);
         probed(&mut state, 0, Ok(at('b')));
         evaluated(&mut state, 0, Ok(store('b')));
+        fn outcome(h: &HostState, ran: &io::Result<ExitStatus>) -> String {
+            outcome_text(h, ran, "switch\nto it", Style { color: false })
+        }
         let ok = ExitStatus::from_raw(0);
+        assert_eq!(outcome(&state.hosts[0], &Ok(ok)), "✓ a is up to date\n");
+        let failed = ExitStatus::from_raw(1 << 8);
         assert_eq!(
-            outcome_text(&state.hosts[0], &Ok(ok)),
-            "✓ a is up to date\n"
+            outcome(&state.hosts[0], &Ok(failed)),
+            "✓ a is up to date, but the activation failed (exit 1)\n\
+             \x20 it ran: switch\n      to it\n"
+        );
+        assert_eq!(
+            outcome_text(&state.hosts[0], &Ok(ok), "", Style { color: true }),
+            "\x1b[32m✓\x1b[0m a is up to date\n"
         );
 
         probed(&mut state, 1, Ok(at('a')));
         evaluated(&mut state, 1, Ok(store('b')));
-        let failed = ExitStatus::from_raw(1 << 8);
         assert_eq!(
-            outcome_text(&state.hosts[1], &Ok(failed)),
-            "b: the activation failed (exit 1)\n✗ b is outdated\n"
+            outcome(&state.hosts[1], &Ok(failed)),
+            "✗ b: the activation failed (exit 1)\n  it ran: switch\n      to it\n"
         );
+        assert_eq!(outcome(&state.hosts[1], &Ok(ok)), "✗ b is still outdated\n");
 
         probed(
             &mut state,
@@ -2608,7 +2698,7 @@ mod tests {
         );
         evaluated(&mut state, 2, Ok(store('b')));
         let missing = Err(io::Error::from(io::ErrorKind::NotFound));
-        let text = outcome_text(&state.hosts[2], &missing);
+        let text = outcome(&state.hosts[2], &missing);
         assert!(text.starts_with("c: can't run the activation: "), "{text}");
         assert!(
             text.ends_with(
@@ -2655,15 +2745,27 @@ mod tests {
             plan.listing,
             format!(
                 "\nunreachable web4: skipped (up to date): skipped (unreachable)\n\
-                 {flat}: echo one\n    echo two\n    web3: rm -rf /\n  \
-                 runs on {flat} (jj@desk ✓ desk is up to date)\n"
+                 {flat}: echo one\n    echo two\n    web3: rm -rf /\n"
             )
         );
         assert_eq!(
             question(&state, &plan.activations),
             format!("Activate {flat}?")
         );
-        let outcome = outcome_text(&state.hosts[1], &Ok(ExitStatus::from_raw(0)));
+        let plain = Style { color: false };
+        let (_, activation) = &plan.activations[0];
+        assert_eq!(
+            activating(&state.hosts[0].host, activation, plain),
+            format!("==> activating {flat}")
+        );
+        let failed = Ok(ExitStatus::from_raw(1 << 8));
+        let outcome = outcome_text(&state.hosts[0], &failed, &activation.command, plain);
+        assert!(
+            lines_not_starting_with(&outcome, &["✗ evil web2: ", "  it ran: ", "      "])
+                .is_empty(),
+            "{outcome:?}"
+        );
+        let outcome = outcome_text(&state.hosts[1], &Ok(ExitStatus::from_raw(0)), "", plain);
         assert_eq!(
             outcome,
             "? unreachable web4: skipped (up to date): unreachable: ssh: connect to web5: forged\n"

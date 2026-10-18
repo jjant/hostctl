@@ -355,7 +355,9 @@ file (`umask 077; mktemp`), then run with `ssh -t … sh <path>` (the script
 deletes itself). It runs with inherited stdio (hostctl ignores SIGINT/SIGQUIT
 meanwhile, like system(3)), then the host is probed again; ssh runs with
 `LogLevel=ERROR`, so it doesn't add "Connection to … closed.". The plan shows
-the exact command before asking, and exactly that string is executed.
+the exact command before asking when it isn't the kind's default template (it
+may come from the flake's inventory), the default one if it fails, and exactly
+that string is executed.
 
 ## Self detection
 

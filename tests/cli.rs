@@ -1917,9 +1917,8 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
         format!(
             "github:o/r @ 1111111 (2h ago)\n\
              \n  ✗ web1  outdated\n\
-             \nupdate: hostctl activate web1\n\
-             \nweb1: {command}\n  runs on web1\n\
-             \n==> activating web1 on web1\n\
+             \nweb1: {command}\n\
+             \n==> activating web1\n\
              activated web1 {}\n\
              ✓ web1 is up to date\n",
             hm('b')
@@ -1965,7 +1964,7 @@ fn an_upload_whose_run_never_connected_is_removed() {
     run.code(2);
     assert!(
         run.stdout
-            .ends_with("web1: the activation failed (exit 255)\n✗ web1 is outdated\n"),
+            .contains("\n✗ web1: the activation failed (exit 255)\n  it ran: ln -sfn "),
         "{run}"
     );
     assert!(run.stderr.contains("Connection timed out"), "{run}");
@@ -1982,15 +1981,9 @@ fn activate_without_a_terminal_needs_yes() {
     home_host(&w, "web1", &hm('a'), &hm('b'));
     let run = w.run(&["activate", "web1"]);
     run.code(3);
-    assert!(
-        run.stdout.contains(&format!(
-            "\nweb1: out=$(nix --extra-experimental-features 'nix-command flakes' build \
-             --no-link --print-out-paths '{}'#.homeConfigurations.web1.activationPackage) && \
-             [ \"$out\" = {} ] && \"$out/activate\"\n  runs on web1\n",
-            World::locked(FLAKE, REV1),
-            hm('b')
-        )),
-        "the plan shows the exact command: {run}"
+    assert_eq!(
+        run.stdout, "github:o/r @ 1111111 (2h ago)\n\n  ✗ web1  outdated\n\n",
+        "hostctl's own command is shown only if it fails: {run}"
     );
     assert!(
         run.stderr
@@ -2035,8 +2028,8 @@ fn activating_this_machine_runs_here() {
     run.code(0);
     assert!(
         run.stdout.ends_with(
-            "\nbigmem: ln -sfn home-manager-6-link \"$HOME/.local/state/nix/profiles/home-manager\"\n  \
-             runs here\n\n==> activating bigmem here\n✓ bigmem is up to date\n"
+            "\nbigmem: ln -sfn home-manager-6-link \"$HOME/.local/state/nix/profiles/home-manager\"\n\
+             \n==> activating bigmem\n✓ bigmem is up to date\n"
         ),
         "{run}"
     );

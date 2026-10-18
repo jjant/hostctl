@@ -49,6 +49,27 @@ const MAGENTA: &str = "35";
 const BLUE: &str = "34";
 const CYAN: &str = "36";
 
+/// `text` in bold, when colors are on.
+pub fn bold(style: Style, text: &str) -> String {
+    let mut out = String::new();
+    style.paint(&mut out, BOLD, text);
+    out
+}
+
+/// `text` dimmed, when colors are on.
+pub fn dim(style: Style, text: &str) -> String {
+    let mut out = String::new();
+    style.paint(&mut out, DIM, text);
+    out
+}
+
+/// `status`'s icon, in its color when colors are on.
+pub fn status_icon(style: Style, status: Status) -> String {
+    let mut out = String::new();
+    style.paint(&mut out, status_color(status), status.icon());
+    out
+}
+
 /// The `hostctl status` table, for the terminal and for `--plain`:
 ///
 /// ```text
@@ -80,8 +101,9 @@ const CYAN: &str = "36";
 ///   alone don't fit); without it nothing is truncated;
 /// - footer: `update: hostctl activate <names>` for hosts that need
 ///   activation (not ahead ones) and have an activation (`hostctl` as
-///   [`AppState::command`] says, with the flags this run was given); then
-///   `error: <summary>` per global error;
+///   [`AppState::command`] says, with the flags this run was given), unless
+///   [`AppState::suggest_activate`] is off; then `error: <summary>` per
+///   global error;
 /// - with `style.color`: icon and label green ✓, blue ↑, yellow ✗ and ○,
 ///   red !, magenta ?, cyan pending, dim offline; ` (this host)` cyan;
 ///   revisions yellow; the rest of the detail and `update:` dim.
@@ -421,7 +443,12 @@ fn footer<'a>(state: &'a AppState, rows: &[Row<'_>]) -> Vec<Line<'a>> {
 
     let mut names = String::new();
     let mut option_like = false;
-    for (h, row) in state.hosts.iter().zip(rows) {
+    let suggested = state
+        .hosts
+        .iter()
+        .zip(rows)
+        .filter(|_| state.suggest_activate);
+    for (h, row) in suggested {
         // Not an ahead host: it would go back.
         if row.status.needs_activation() && activation(state, h).is_some() {
             let name = one_line(&h.host.name);

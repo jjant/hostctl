@@ -525,6 +525,9 @@ pub struct AppState {
     /// commands hostctl suggests or copies start with (`hostctl`, plus the
     /// `-c`/`-f`/`--self` this run was given).
     pub command: String,
+    /// The status table suggests `hostctl activate` for the hosts that need
+    /// it (not when it leads into `activate` itself).
+    pub suggest_activate: bool,
     /// Problems not tied to a host, newest last.
     pub errors: Vec<ErrorInfo>,
     /// `nix` or `ssh` couldn't be run ([`Event::Unrunnable`], whose error
@@ -541,6 +544,7 @@ impl Default for AppState {
             run: Slot::default(),
             config_path: None,
             command: "hostctl".into(),
+            suggest_activate: true,
             errors: Vec::new(),
             unrunnable: false,
             interrupted: false,
