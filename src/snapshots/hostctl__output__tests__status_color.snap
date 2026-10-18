@@ -4,15 +4,15 @@ expression: visible_escapes(&colored)
 ---
 ␛[1mgithub:jjant/nix-config␛[0m @ 42ea902␛[2m (2h ago)␛[0m
 
-  ␛[33m✗␛[0m al2-aarch64    ␛[33moutdated␛[0m       ␛[2mon 1a2b3c4 (4mo old)␛[0m
-  ␛[33m○␛[0m al2-x86_64     ␛[33mnot activated␛[0m  ␛[2mno home-manager profile␛[0m
-  ␛[36m…␛[0m al2023-x86_64  ␛[36mevaluating 12s␛[0m
-  ␛[32m✓␛[0m bigmem •       ␛[32mup to date␛[0m
-  ␛[31m!␛[0m ci             ␛[31meval failed␛[0m    ␛[2mattribute 'ci' missing␛[0m
-  ␛[2m–␛[0m mac-m1         ␛[2moffline␛[0m        ␛[2mreachable only from a desk you ssh into from the Mac␛[0m
-  ␛[36m…␛[0m new-box        ␛[36mwaiting␛[0m
-  ␛[35m?␛[0m web1           ␛[35munreachable␛[0m    ␛[2mssh: Could not resolve hostname web1: Name or service not known␛[0m
-  ␛[31m!␛[0m web2           ␛[31mprobe failed␛[0m   ␛[2mconnection dropped / timed out after connecting␛[0m
-  ␛[34m↑␛[0m tryout         ␛[34mahead␛[0m          ␛[2mon 9b8a7c6 (3h newer)␛[0m
+  ␛[33m✗␛[0m al2-aarch64         ␛[33moutdated␛[0m       ␛[2mon 1a2b3c4 (4mo old)␛[0m
+  ␛[33m○␛[0m al2-x86_64          ␛[33mnot activated␛[0m  ␛[2mno home-manager profile␛[0m
+  ␛[36m…␛[0m al2023-x86_64       ␛[36mevaluating 12s␛[0m
+  ␛[32m✓␛[0m bigmem␛[36m (this host)␛[0m  ␛[32mup to date␛[0m
+  ␛[31m!␛[0m ci                  ␛[31meval failed␛[0m    ␛[2mattribute 'ci' missing␛[0m
+  ␛[2m–␛[0m mac-m1              ␛[2moffline␛[0m        ␛[2mreachable only from a desk you ssh into from the Mac␛[0m
+  ␛[36m…␛[0m new-box             ␛[36mwaiting␛[0m
+  ␛[35m?␛[0m web1                ␛[35munreachable␛[0m    ␛[2mssh: Could not resolve hostname web1: Name or service not known␛[0m
+  ␛[31m!␛[0m web2                ␛[31mprobe failed␛[0m   ␛[2mconnection dropped / timed out after connecting␛[0m
+  ␛[34m↑␛[0m tryout              ␛[34mahead␛[0m          ␛[2mon 9b8a7c6 (3h newer)␛[0m
 
 ␛[2mupdate:␛[0m hostctl activate al2-aarch64 al2-x86_64

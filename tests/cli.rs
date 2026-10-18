@@ -1467,7 +1467,7 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  ✓ bigmem •  up to date\n"
+         \n  ✓ bigmem (this host)  up to date\n"
     );
     assert!(w.calls().iter().all(|c| c.tool == "nix"), "{}", w.log());
 
@@ -1500,7 +1500,7 @@ fn on_a_mac_the_darwin_host_behind_a_tunnel_is_assumed_to_be_this_machine() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  ✓ mac •?  up to date\n"
+         \n  ✓ mac (this host?)  up to date\n"
     );
     assert!(
         w.calls().iter().all(|c| c.tool == "nix"),

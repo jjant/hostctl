@@ -54,10 +54,10 @@ const CYAN: &str = "36";
 /// ```text
 /// github:jjant/nix-config @ 42ea902 (2h ago)
 ///
-///   ✗ al2-aarch64  outdated       on 1a2b3c4 (4mo old)
-///   ○ al2-x86_64   not activated  no home-manager profile
-///   ✓ bigmem •     up to date
-///   – mac-m1       offline        reachable only from a desk you ssh into from the Mac
+///   ✗ al2-aarch64         outdated       on 1a2b3c4 (4mo old)
+///   ○ al2-x86_64          not activated  no home-manager profile
+///   ✓ bigmem (this host)  up to date
+///   – mac-m1              offline        reachable only from a desk you ssh into from the Mac
 ///
 /// update: hostctl activate al2-aarch64 al2-x86_64
 /// ```
@@ -65,8 +65,8 @@ const CYAN: &str = "36";
 /// - header: one line per flake in use: `<flake> @ <short rev> (<age of
 ///   lastModified>)`, plus ` · stale: <reason>` / ` · flake.lock out of date`,
 ///   or `<flake>: <error summary>` (` · resolving…` while it resolves);
-/// - one row per host in state order: the status's icon, name (+ ` •` when
-///   local, ` •?` when assumed local), label (pending rows show their
+/// - one row per host in state order: the status's icon, name (+ ` (this
+///   host)` when local, ` (this host?)` when assumed local), label (pending rows show their
 ///   activity and elapsed time, e.g. `evaluating 3s`, or `interrupted`),
 ///   detail:
 ///   up-to-date/outdated/ahead → the drift (`on <rev7> (<age> old)`, `on
@@ -126,7 +126,7 @@ fn render_status(
             line.push("  ", PLAIN)
                 .push(row.status.icon(), color)
                 .push(" ", PLAIN)
-                .padded(&*row.name, PLAIN, name_w)
+                .name(&row.name, name_w)
                 .push("  ", PLAIN);
             if row.detail.is_empty() {
                 line.push(&row.label, color);
@@ -163,7 +163,7 @@ fn status_color(status: Status) -> &'static str {
 /// One host's cells in the status table.
 struct Row<'a> {
     status: Status,
-    name: Cow<'a, str>,
+    name: Name<'a>,
     label: String,
     detail: String,
 }
@@ -173,21 +173,34 @@ impl<'a> Row<'a> {
         let status = h.status();
         Row {
             status,
-            name: display_name(&h.host),
+            name: Name::new(&h.host),
             label: status_label(h, status, now, interrupted),
             detail: detail(h, status, now_unix),
         }
     }
 }
 
-/// A host's name for tables, marked ` •` when it is this machine and ` •?`
-/// when that is only assumed.
-fn display_name(host: &Host) -> Cow<'_, str> {
-    let name = one_line(&host.name);
-    match host.target {
-        Target::Local { assumed: false } => format!("{name} •").into(),
-        Target::Local { assumed: true } => format!("{name} •?").into(),
-        Target::Ssh(_) => name,
+/// A host's name for tables, marked ` (this host)` when it is this machine
+/// and ` (this host?)` when that is only assumed.
+struct Name<'a> {
+    name: Cow<'a, str>,
+    this_host: Option<&'static str>,
+}
+
+impl<'a> Name<'a> {
+    fn new(host: &'a Host) -> Name<'a> {
+        Name {
+            name: one_line(&host.name),
+            this_host: match host.target {
+                Target::Local { assumed: false } => Some(" (this host)"),
+                Target::Local { assumed: true } => Some(" (this host?)"),
+                Target::Ssh(_) => None,
+            },
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.name.width() + self.this_host.map_or(0, UnicodeWidthStr::width)
     }
 }
 
@@ -784,7 +797,7 @@ pub struct DiffReport<'a> {
     pub diff: &'a ClosureDiff,
 }
 
-/// `hostctl hosts`: one aligned row per host — name (+ ` •`/` •?`), kind,
+/// `hostctl hosts`: one aligned row per host — name, kind,
 /// how it's reached (`local`, destination, ` (probe: <cmd>)` for
 /// forced-command routes), where it's defined (`discovered`, `inventory`,
 /// `config`, comma-joined), and the attr, as `<flake>#<attr>` when the
@@ -865,7 +878,7 @@ impl<'a> HostRow<'a> {
             }
         }
         HostRow {
-            name: display_name(host),
+            name: one_line(&host.name),
             kind: host.kind.as_str(),
             via: one_line(host.reached_via()),
             probe,
@@ -914,6 +927,17 @@ impl<'a> Line<'a> {
     ) -> &mut Self {
         let start = self.width;
         self.push(text, code).pad_to(start + cols)
+    }
+
+    /// A host's name, its ` (this host)` mark in cyan, then spaces up to
+    /// `cols` columns.
+    fn name(&mut self, name: &'a Name<'_>, cols: usize) -> &mut Self {
+        let start = self.width;
+        self.push(&*name.name, PLAIN);
+        if let Some(mark) = name.this_host {
+            self.push(mark, CYAN);
+        }
+        self.pad_to(start + cols)
     }
 
     /// Spaces up to column `col` (none if the line is already that wide).
@@ -1432,10 +1456,10 @@ mod tests {
         let doc = "\
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  ✗ al2-aarch64  outdated       on 1a2b3c4 (4mo old)
-  ○ al2-x86_64   not activated  no home-manager profile
-  ✓ bigmem •     up to date
-  – mac-m1       offline        reachable only from a desk you ssh into from the Mac
+  ✗ al2-aarch64         outdated       on 1a2b3c4 (4mo old)
+  ○ al2-x86_64          not activated  no home-manager profile
+  ✓ bigmem (this host)  up to date
+  – mac-m1              offline        reachable only from a desk you ssh into from the Mac
 
 update: hostctl activate al2-aarch64 al2-x86_64
 ";
@@ -1549,15 +1573,15 @@ update: hostctl activate al2-aarch64 al2-x86_64
         let colored = sim.table(COLOR, None);
         assert_eq!(strip_sgr(&colored), sim.table(NO_COLOR, None));
         for painted in [
-            "\x1b[32m✓\x1b[0m bigmem •       \x1b[32mup to date\x1b[0m",
-            "\x1b[33m✗\x1b[0m al2-aarch64    \x1b[33moutdated\x1b[0m",
-            "\x1b[33m○\x1b[0m al2-x86_64     \x1b[33mnot activated\x1b[0m",
-            "\x1b[31m!\x1b[0m ci             \x1b[31meval failed\x1b[0m",
-            "\x1b[31m!\x1b[0m web2           \x1b[31mprobe failed\x1b[0m",
-            "\x1b[35m?\x1b[0m web1           \x1b[35munreachable\x1b[0m",
-            "\x1b[2m–\x1b[0m mac-m1         \x1b[2moffline\x1b[0m",
-            "\x1b[36m…\x1b[0m al2023-x86_64  \x1b[36mevaluating 12s\x1b[0m",
-            "\x1b[34m↑\x1b[0m tryout         \x1b[34mahead\x1b[0m",
+            "\x1b[32m✓\x1b[0m bigmem\x1b[36m (this host)\x1b[0m  \x1b[32mup to date\x1b[0m",
+            "\x1b[33m✗\x1b[0m al2-aarch64         \x1b[33moutdated\x1b[0m",
+            "\x1b[33m○\x1b[0m al2-x86_64          \x1b[33mnot activated\x1b[0m",
+            "\x1b[31m!\x1b[0m ci                  \x1b[31meval failed\x1b[0m",
+            "\x1b[31m!\x1b[0m web2                \x1b[31mprobe failed\x1b[0m",
+            "\x1b[35m?\x1b[0m web1                \x1b[35munreachable\x1b[0m",
+            "\x1b[2m–\x1b[0m mac-m1              \x1b[2moffline\x1b[0m",
+            "\x1b[36m…\x1b[0m al2023-x86_64       \x1b[36mevaluating 12s\x1b[0m",
+            "\x1b[34m↑\x1b[0m tryout              \x1b[34mahead\x1b[0m",
             "\x1b[1mgithub:jjant/nix-config\x1b[0m",
         ] {
             assert!(
@@ -2898,8 +2922,8 @@ bigmem: 702 → 705 paths · 3.1 GiB → 3.2 GiB (+24.3 MiB)
         assert_eq!(
             text,
             "\
-a         home-manager  a      discovered  homeConfigurations.a.activationPackage
-bigmem •  home-manager  local  discovered  homeConfigurations.bigmem.activationPackage
+a       home-manager  a      discovered  homeConfigurations.a.activationPackage
+bigmem  home-manager  local  discovered  homeConfigurations.bigmem.activationPackage
 "
         );
         // Ties go to the first flake.

@@ -4,10 +4,10 @@ expression: table
 ---
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  ✗ mäc-mini   outdated
-  ✓ zürich     up to date
-  ✗ 東京-desk  outdated  会議室の横の机、再起動は金曜日だけ
-  ✓ ñandú •    up to date
-  ✗ 🍎-air     outdated
+  ✗ mäc-mini           outdated
+  ✓ zürich             up to date
+  ✗ 東京-desk          outdated  会議室の横の机、再起動は金曜日だけ
+  ✓ ñandú (this host)  up to date
+  ✗ 🍎-air             outdated
 
 update: hostctl activate 'mäc-mini' '東京-desk' '🍎-air'

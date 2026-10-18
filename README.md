@@ -22,10 +22,10 @@ hosts answer):
 $ hostctl status
 github:you/nix-config @ 42ea902 (2h ago)
 
-  ✗ desk •  outdated       on 1a2b3c4 (3d old)
-  – laptop  offline        reachable from the desk only
-  ✓ nas     up to date
-  ○ work    not activated  no home-manager profile
+  ✗ desk (this host)  outdated       on 1a2b3c4 (3d old)
+  – laptop            offline        reachable from the desk only
+  ✓ nas               up to date
+  ○ work              not activated  no home-manager profile
 
 update: hostctl activate desk work
 ```
@@ -33,7 +33,7 @@ update: hostctl activate desk work
 Without a config file, every `nixosConfigurations`, `darwinConfigurations` and
 `homeConfigurations` entry of the flake is a host, reached as `ssh <name>`, so
 a `Host` entry in `~/.ssh/config` is all a host needs. The machine you run
-hostctl on (`•`) is checked without ssh. Anything else (another destination
+hostctl on (`this host`) is checked without ssh. Anything else (another destination
 or user, a host behind a tunnel, a custom activation command) goes in
 `~/.config/hostctl/config.toml`; see [Configuration](docs/reference.md#configuration).
 
