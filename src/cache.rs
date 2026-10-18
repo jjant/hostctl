@@ -25,6 +25,9 @@ pub const VERSION: u32 = 2;
 /// Flake entries kept (most recently used first).
 pub const MAX_ENTRIES: usize = 64;
 
+/// Commit times kept (the newest commits win).
+pub const MAX_REVISIONS: usize = 256;
+
 /// A bigger file isn't one hostctl wrote (64 entries stay far below this):
 /// treated as corrupt rather than read into memory.
 const MAX_FILE_BYTES: u64 = 32 << 20;
@@ -80,6 +83,10 @@ pub struct CacheFile {
     /// `<flake as configured>#<attr>` → hint.
     #[serde(default)]
     pub hints: BTreeMap<String, Hint>,
+    /// `<flake as configured>@<rev>` → that commit's `lastModified`, for
+    /// revisions hosts run that hostctl never evaluated.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub revisions: BTreeMap<String, i64>,
 }
 
 /// Which flake revision a store path was the desired generation of.
@@ -229,6 +236,32 @@ impl Cache {
         self.touched_hints.insert(key);
     }
 
+    /// When revision `rev` of `flake` was committed (`lastModified`), if
+    /// hostctl evaluated it or recorded it ([`Self::record_revision`]).
+    pub fn revision_time(&self, flake: &str, rev: &str) -> Option<i64> {
+        self.data
+            .revisions
+            .get(&revision_key(flake, rev))
+            .copied()
+            .or_else(|| {
+                self.data
+                    .flakes
+                    .values()
+                    .filter(|entry| entry.flake == flake && entry.rev.as_deref() == Some(rev))
+                    .find_map(|entry| entry.last_modified)
+            })
+    }
+
+    /// Remember when revision `rev` of `flake` was committed.
+    pub fn record_revision(&mut self, flake: &str, rev: &str, last_modified: i64) {
+        let key = revision_key(flake, rev);
+        if self.data.revisions.get(&key) != Some(&last_modified) {
+            self.data.revisions.insert(key, last_modified);
+            prune_revisions(&mut self.data.revisions, MAX_REVISIONS);
+            self.dirty = true;
+        }
+    }
+
     /// Which cached flake revision `out` was the desired generation of; the
     /// most recent (`last_modified`, then `used`) match wins.
     pub fn deployed_rev(&self, out: &StorePath) -> Option<DeployedRev> {
@@ -279,6 +312,7 @@ impl Cache {
             merge(&mut self.data, disk, &self.touched_hints);
         }
         prune(&mut self.data.flakes, MAX_ENTRIES);
+        prune_revisions(&mut self.data.revisions, MAX_REVISIONS);
         self.data.version = VERSION;
         let mut json = serde_json::to_vec(&self.data).map_err(io::Error::other)?;
         json.push(b'\n');
@@ -402,6 +436,26 @@ fn merge(ours: &mut CacheFile, theirs: CacheFile, touched_hints: &BTreeSet<Strin
         if !touched_hints.contains(&key) {
             ours.hints.insert(key, hint);
         }
+    }
+    // A commit's time never changes.
+    for (key, at) in theirs.revisions {
+        ours.revisions.entry(key).or_insert(at);
+    }
+}
+
+fn revision_key(flake: &str, rev: &str) -> String {
+    format!("{flake}@{rev}")
+}
+
+/// Keep the `max` newest commits (by time, then key).
+fn prune_revisions(revisions: &mut BTreeMap<String, i64>, max: usize) {
+    if revisions.len() <= max {
+        return;
+    }
+    let mut by_age: Vec<(i64, String)> = revisions.iter().map(|(k, at)| (*at, k.clone())).collect();
+    by_age.sort_unstable();
+    for (_, key) in by_age.into_iter().take(revisions.len() - max) {
+        revisions.remove(&key);
     }
 }
 
@@ -949,6 +1003,61 @@ mod tests {
         cache.save().unwrap();
         let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn revision_times_come_from_records_and_evaluations() {
+        let (_dir, path) = temp_cache();
+        let mut cache = Cache::open(path.clone());
+        let a = info("github:jjant/nix-config", "42ea902", 1792240011);
+        cache.record_out_path(&key(&a), &a, "attr", &out('a'), 1792240100);
+        assert_eq!(
+            cache.revision_time("github:jjant/nix-config", "42ea902"),
+            Some(1792240011)
+        );
+        assert_eq!(cache.revision_time("github:other/repo", "42ea902"), None);
+        assert_eq!(
+            cache.revision_time("github:jjant/nix-config", "40ad9d3"),
+            None
+        );
+        cache.record_revision("github:jjant/nix-config", "40ad9d3", 1792300000);
+        assert_eq!(
+            cache.revision_time("github:jjant/nix-config", "40ad9d3"),
+            Some(1792300000)
+        );
+        cache.save().unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            json["revisions"],
+            serde_json::json!({ "github:jjant/nix-config@40ad9d3": 1792300000 })
+        );
+        // Another process's records survive a save, and ours are kept.
+        let mut other = Cache::open(path.clone());
+        other.record_revision("github:jjant/nix-config", "1a2b3c4", 1780000000);
+        cache.record_revision("github:jjant/nix-config", "5e6f7a8", 1790000000);
+        other.save().unwrap();
+        cache.save().unwrap();
+        let reopened = Cache::open(path);
+        for (rev, at) in [
+            ("40ad9d3", 1792300000),
+            ("1a2b3c4", 1780000000),
+            ("5e6f7a8", 1790000000),
+        ] {
+            assert_eq!(
+                reopened.revision_time("github:jjant/nix-config", rev),
+                Some(at),
+                "{rev}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_newest_revision_times_are_kept() {
+        let mut revisions: BTreeMap<String, i64> =
+            (0..10).map(|i| (format!("f@{i}"), 100 - i)).collect();
+        prune_revisions(&mut revisions, 3);
+        assert_eq!(revisions.keys().collect::<Vec<_>>(), ["f@0", "f@1", "f@2"]);
     }
 
     #[test]
