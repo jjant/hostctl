@@ -350,37 +350,6 @@ impl FlakeInfo {
         let _ = write!(id, ";url={}", self.locked);
         Some(id)
     }
-
-    /// For github/gitlab/sourcehut flakes (honoring `?host=`), a web URL
-    /// comparing `from` with this revision
-    /// (`https://github.com/o/r/compare/<from>...<rev>`; sourcehut has no
-    /// compare view, so its log at this revision). `None` unless both
-    /// revisions are hex (a `-dirty` suffix on `from` is ignored).
-    pub fn compare_url(&self, from: &str) -> Option<String> {
-        self.compare_url_between(from, false)
-    }
-
-    /// [`Self::compare_url`] the other way: what the newer revision `to`
-    /// has that this one hasn't (sourcehut: the log at `to`).
-    pub fn compare_url_to(&self, to: &str) -> Option<String> {
-        self.compare_url_between(to, true)
-    }
-
-    fn compare_url_between(&self, other: &str, newer: bool) -> Option<String> {
-        let (kind, base) = self.forge()?;
-        let rev = self.rev.as_deref().filter(|r| is_hex(r))?;
-        let from = other.strip_suffix("-dirty").unwrap_or(other);
-        if !is_hex(from) {
-            return None;
-        }
-        let (from, to) = if newer { (rev, from) } else { (from, rev) };
-        Some(match kind {
-            "github" => format!("{base}/compare/{from}...{to}"),
-            "gitlab" => format!("{base}/-/compare/{from}...{to}"),
-            _ => format!("{base}/log/{to}"),
-        })
-    }
-
     /// For github/gitlab/sourcehut flakes (honoring `?host=`), the kind and
     /// the repository's web URL (`https://github.com/o/r`).
     fn forge(&self) -> Option<(&str, String)> {
@@ -423,10 +392,6 @@ impl FlakeInfo {
             _ => Some(self.forge()?.1),
         }
     }
-}
-
-fn is_hex(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Decode `%XX` escapes; text that wouldn't decode to UTF-8 is kept as is.
@@ -1558,88 +1523,36 @@ error:
     }
 
     #[test]
-    fn compare_urls() {
-        let info = sample_info();
-        assert_eq!(
-            info.compare_url("1a2b3c4").as_deref(),
-            Some(
-                "https://github.com/jjant/nix-config/compare/1a2b3c4...42ea902131b93c04d098d3bcd02f29305b4bad7c"
-            )
-        );
-        assert_eq!(
-            info.compare_url("1a2b3c4-dirty").as_deref(),
-            info.compare_url("1a2b3c4").as_deref()
-        );
-        assert_eq!(
-            info.git_remote().as_deref(),
-            Some("https://github.com/jjant/nix-config")
-        );
-        // A host ahead: what it has that the compared revision hasn't.
-        assert_eq!(
-            info.compare_url_to("1a2b3c4").as_deref(),
-            Some(
-                "https://github.com/jjant/nix-config/compare/42ea902131b93c04d098d3bcd02f29305b4bad7c...1a2b3c4"
-            )
-        );
+    fn git_remotes_of_forges_and_git_flakes() {
         let at = |kind: &str, locked: &str| FlakeInfo {
             kind: Some(kind.into()),
             locked: locked.into(),
-            rev: Some("cafe".into()),
             ..sample_info()
         };
-        assert_eq!(
-            at("github", "github:o/r/cafe?host=ghe.example.com&narHash=x")
-                .compare_url("beef")
-                .as_deref(),
-            Some("https://ghe.example.com/o/r/compare/beef...cafe")
-        );
-        assert_eq!(
-            at("gitlab", "gitlab:veloren%2Fdev/rfcs/cafe?narHash=x")
-                .compare_url("beef")
-                .as_deref(),
-            Some("https://gitlab.com/veloren/dev/rfcs/-/compare/beef...cafe")
-        );
-        assert_eq!(
-            at("gitlab", "gitlab:o/r/cafe?narHash=x&host=git.example.org")
-                .compare_url("beef")
-                .as_deref(),
-            Some("https://git.example.org/o/r/-/compare/beef...cafe")
-        );
-        assert_eq!(
-            at("sourcehut", "sourcehut:~misterio/nix-colors/cafe?narHash=x")
-                .compare_url("beef")
-                .as_deref(),
-            Some("https://git.sr.ht/~misterio/nix-colors/log/cafe")
-        );
-    }
-
-    #[test]
-    fn no_compare_url_without_a_web_forge_or_revisions() {
-        let info = sample_info();
-        for from in ["", "main", "1a2b3c4 ", "../../x", "-dirty", &"a".repeat(65)] {
-            assert_eq!(info.compare_url(from), None, "{from:?}");
+        for (kind, locked, remote) in [
+            (
+                "github",
+                "github:o/r/1a2b?host=git.example.com",
+                Some("https://git.example.com/o/r"),
+            ),
+            (
+                "gitlab",
+                "gitlab:veloren%2Fdev/veloren/1a2b",
+                Some("https://gitlab.com/veloren/dev/veloren"),
+            ),
+            (
+                "sourcehut",
+                "sourcehut:~user/repo/1a2b",
+                Some("https://git.sr.ht/~user/repo"),
+            ),
+            // The locked URL must be of its kind, and name owner and repo.
+            ("gitlab", "github:o/r/1a2b", None),
+            ("github", "github:jjant", None),
+            ("tarball", "https://example.com/x.tar.gz", None),
+        ] {
+            assert_eq!(at(kind, locked).git_remote().as_deref(), remote, "{locked}");
         }
-        let no_rev = FlakeInfo {
-            rev: None,
-            ..info.clone()
-        };
-        assert_eq!(no_rev.compare_url("1a2b3c4"), None);
-        for json in [GIT, PATH, GIT_DIRTY] {
-            assert_eq!(
-                parse_metadata("f", json, "").unwrap().compare_url("1a2b"),
-                None
-            );
-        }
-        let mismatched = FlakeInfo {
-            kind: Some("gitlab".into()),
-            ..info.clone()
-        };
-        assert_eq!(mismatched.compare_url("1a2b3c4"), None);
-        let truncated = FlakeInfo {
-            locked: "github:jjant".into(),
-            ..info
-        };
-        assert_eq!(truncated.compare_url("1a2b3c4"), None);
+        assert_eq!(parse_metadata("f", PATH, "").unwrap().git_remote(), None);
     }
 
     #[test]

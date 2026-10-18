@@ -29,9 +29,9 @@ use crate::util;
 #[command(
     name = "hostctl",
     version,
-    about = "Are your Nix hosts running the configuration on your flake's main branch?",
-    after_help = "Without a command: the dashboard on a terminal, `status` otherwise.\n\
-                  Exit codes: 0 up to date, 1 outdated, 2 trouble, 3 couldn't check, 130 interrupted."
+    about = "Check whether your Nix hosts run their flake's current configuration",
+    after_help = "Without a command: `status`.\n\
+                  Exit codes: 0 up to date, 1 outdated or ahead, 2 trouble, 3 couldn't check, 130 interrupted."
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -94,12 +94,7 @@ pub enum ColorChoice {
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// Interactive dashboard (the default on a terminal)
-    Tui {
-        /// Only hosts matching these globs (or @local)
-        hosts: Vec<String>,
-    },
-    /// Check every host and print a table
+    /// Check every host and print a table (the default)
     Status {
         /// Only hosts matching these globs (or @local)
         hosts: Vec<String>,
@@ -173,8 +168,7 @@ pub fn main() -> ExitCode {
     let cwd = std::env::current_dir().ok();
     let command = command_prefix(&cli.global, given, cwd.as_deref());
     let code = finish(run(cli, &command, started));
-    // Every way out (a finished check, Ctrl-C, quitting the dashboard)
-    // comes here: what was killed on the way gets its SIGKILL before
+    // Every way out (a finished check, Ctrl-C) comes here: what was killed on the way gets its SIGKILL before
     // hostctl is gone.
     crate::exec::finish_kills();
     ExitCode::from(code)
@@ -304,9 +298,6 @@ fn exit_message(exit: &Exit) -> Option<String> {
 /// The commands that check hosts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Check {
-    Tui {
-        hosts: Vec<String>,
-    },
     Status {
         hosts: Vec<String>,
         json: bool,
@@ -329,22 +320,17 @@ enum Check {
 
 impl Check {
     /// What the command runs when none is given.
-    fn default_for(stdout_tty: bool) -> Check {
-        if stdout_tty {
-            Check::Tui { hosts: Vec::new() }
-        } else {
-            Check::Status {
-                hosts: Vec::new(),
-                json: false,
-                plain: false,
-            }
+    fn default() -> Check {
+        Check::Status {
+            hosts: Vec::new(),
+            json: false,
+            plain: false,
         }
     }
 
     fn patterns(&self) -> &[String] {
         match self {
-            Check::Tui { hosts }
-            | Check::Status { hosts, .. }
+            Check::Status { hosts, .. }
             | Check::Activate { hosts, .. }
             | Check::Hosts { hosts } => hosts,
             Check::Diff { host, .. } => std::slice::from_ref(host),
@@ -373,19 +359,11 @@ fn run(cli: Cli, hostctl: &str, started: Instant) -> Result<u8, Exit> {
             print(&setup.config.to_toml())?;
             return Ok(0);
         }
-        Some(Cmd::Tui { hosts }) => {
-            if !io::stdout().is_terminal() {
-                return Err(Exit::Usage(format!(
-                    "the dashboard needs a terminal (stdout isn't one): use `{hostctl} status`"
-                )));
-            }
-            Check::Tui { hosts }
-        }
         Some(Cmd::Status { hosts, json, plain }) => Check::Status { hosts, json, plain },
         Some(Cmd::Diff { host, build, json }) => Check::Diff { host, build, json },
         Some(Cmd::Activate { hosts, yes, force }) => Check::Activate { hosts, yes, force },
         Some(Cmd::Hosts { hosts }) => Check::Hosts { hosts },
-        None => Check::default_for(live::drawable(&io::stdout())),
+        None => Check::default(),
     };
     checking(&global, hostctl, started, check)
 }
@@ -641,7 +619,6 @@ async fn dispatch(
     };
     let patterns = check.patterns().to_vec();
     match check {
-        Check::Tui { .. } => dashboard(setup, engine, selection, &patterns).await,
         Check::Status { json, plain, .. } => {
             status(setup, engine, &selection, &patterns, json, plain, signals).await
         }
@@ -758,35 +735,6 @@ async fn check_selection(
         warn(&warning);
     }
     checked
-}
-
-/// How the dashboard finds its hosts again on a refresh, as at the start
-/// (discovery and the inventory, the config, then `patterns`), when the
-/// flake has a say in them; failures say why rather than end anything.
-fn rediscovery(setup: &Setup, patterns: &[String]) -> Option<crate::tui::Rediscover> {
-    let config = &setup.config;
-    let flake = config.flake.clone()?;
-    if !config.discover && config.inventory.is_empty() {
-        return None;
-    }
-    let (config, local, patterns) = (config.clone(), setup.local.clone(), patterns.to_vec());
-    Some(Box::new(move |engine: Engine| {
-        let (config, local) = (config.clone(), local.clone());
-        let (flake, patterns) = (flake.clone(), patterns.clone());
-        Box::pin(async move {
-            let (info, flake_hosts) = engine
-                .discover(&flake)
-                .await
-                .map_err(|e| hosts_error(&flake, &e.summary))?;
-            let resolved = config
-                .resolve_hosts(Some(&flake_hosts), &local)
-                .map_err(|e| format!("{e:#}"))?;
-            Ok(crate::tui::Found {
-                hosts: select(resolved.hosts, &patterns)?,
-                known: vec![info],
-            })
-        })
-    }))
 }
 
 /// The hosts to check: discovery and the flake's inventory (when a flake
@@ -973,31 +921,6 @@ impl Selection {
         state.command.clone_from(&setup.command);
         state
     }
-}
-
-async fn dashboard(
-    setup: &Setup,
-    engine: &Engine,
-    selection: Selection,
-    patterns: &[String],
-) -> Result<u8, Exit> {
-    let options = crate::tui::Options {
-        refresh_interval: setup.config.ui.refresh_interval.non_zero(),
-        color: setup.color,
-        offline: setup.freshness == Freshness::Offline,
-    };
-    let state = selection.state(setup);
-    crate::tui::run(
-        engine.clone(),
-        state,
-        selection.hosts,
-        selection.known,
-        options,
-        rediscovery(setup, patterns),
-        selection.speculative,
-    )
-    .await
-    .map_err(|e| Exit::Trouble(format!("{e:#}")))
 }
 
 async fn status(
@@ -1917,7 +1840,7 @@ mod tests {
             "hostctl -c '/home/jj/src/a b.toml' -f /home/jj/src --self 'my desk'"
         );
         assert_eq!(
-            prefix(&["-f", "../nix", "-c", "/etc/hostctl/config.toml", "tui"]),
+            prefix(&["-f", "../nix", "-c", "/etc/hostctl/config.toml", "status"]),
             "hostctl -c /etc/hostctl/config.toml -f /home/jj/src/../nix"
         );
         // Flake references other than paths mean the same anywhere; the other
@@ -1989,10 +1912,9 @@ mod tests {
     }
 
     #[test]
-    fn default_command_depends_on_the_terminal() {
-        assert_eq!(Check::default_for(true), Check::Tui { hosts: vec![] });
+    fn the_default_command_is_status() {
         assert_eq!(
-            Check::default_for(false),
+            Check::default(),
             Check::Status {
                 hosts: vec![],
                 json: false,

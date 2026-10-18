@@ -96,12 +96,6 @@ options = []
 # over one is retried once without it.
 persist = "10m"
 
-[ui]
-# Re-check every so often in the dashboard ("0s": only when you press r).
-# Keep it at 60s or more for github: flakes, whose API allows 60 requests an
-# hour.
-refresh-interval = "0s"
-
 # Settings for every host. Layers merge field by field, later wins:
 # discovery -> the flake's inventory -> [defaults] -> [hosts.<name>].
 # `destination` may use {name}, the host's name.
@@ -122,7 +116,7 @@ kind = "home-manager"
 # an alias from your ssh config. Default: the host's name, if it looks like
 # `[user@]host`.
 destination = "devhost-devuser1-1a-8d41e07a.dc-west1.example.com"
-# The activation command (`a` in the dashboard, `hostctl activate HOST`): a
+# The activation command (`hostctl activate HOST`): a
 # shell template whose placeholders are replaced by shell-quoted values:
 # {flake} the locked URL that was compared, {flake_url} the flake as
 # configured, {rev}, {name}, {attr}, {out} the desired store path,

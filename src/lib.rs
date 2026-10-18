@@ -17,5 +17,4 @@ pub mod output;
 pub mod probe;
 pub mod remote;
 pub mod storepath;
-pub mod tui;
 pub mod util;

@@ -2,7 +2,7 @@
 
 `hostctl` checks whether every host runs the configuration its flake currently
 describes, and does it fast. It started as a `hosts status` shell script and is
-now a standalone Rust tool with a TUI, for NixOS, nix-darwin and standalone
+now a standalone Rust tool, for NixOS, nix-darwin and standalone
 home-manager hosts.
 
 Non-goals: being a deployment orchestrator (deploy-rs, colmena), a daemon, or an
@@ -115,8 +115,7 @@ Warm `hostctl status` ≈ max(metadata-or-cached ≤ 0.3 s, slowest probe ≈ 0.
                                                                                   │
           AppState ◄── Event ── Engine::check(hosts) ── probes ∥ flake metadata → evals (≤ jobs)
              │                        ▲                    (runner: exec::run, injectable)
-             ├─► tui (fullscreen dashboard)     Engine::{probe, diff, prepare_interactive}
-             ├─► live status table (redraw in place on a TTY)
+             ├─► live status table (redraw in place on a TTY)   Engine::{probe, diff, prepare_interactive}
              └─► plain text / JSON
 ```
 
@@ -134,7 +133,7 @@ Warm `hostctl status` ≈ max(metadata-or-cached ≤ 0.3 s, slowest probe ≈ 0.
 
 | module      | responsibility                                                                 |
 | ----------- | ------------------------------------------------------------------------------ |
-| `util`      | durations, ages, sizes, glob, base64/OSC 52, truncation, terminal sanitizing   |
+| `util`      | durations, ages, sizes, glob, truncation, terminal sanitizing                  |
 | `storepath` | store path parsing; Nix `DrvName` split + `compareVersions`                    |
 | `closure`   | closure diff (same grouping as `nix store diff-closures`)                      |
 | `config`    | TOML schema, loading, overrides, validation, resolution into `Host`s           |
@@ -149,7 +148,6 @@ Warm `hostctl status` ≈ max(metadata-or-cached ≤ 0.3 s, slowest probe ≈ 0.
 | `actions`   | activation commands, copy text, closure/build scripts                          |
 | `output`    | plain table, JSON report structs, diff text, hosts listing                     |
 | `live`      | `status` on a terminal: in-place redraw of the plain table                     |
-| `tui`       | fullscreen dashboard (`app` = pure state machine, `view` = rendering)          |
 | `cli`       | clap definitions and dispatch                                                  |
 
 ## Probing the current generation
@@ -310,7 +308,7 @@ even with `--impure` in `nix.options`), cached by flake identity.
   that hostctl never evaluated (256 newest kept); `"undatable"` (same keys →
   when the lookup failed) holds off retries for an hour.
 
-## Closure diff (`d`/Enter in the TUI, `hostctl diff <host>`)
+## Closure diff (`hostctl diff <host>`)
 
 1. One script on the target prints the closures (`nix-store -qR`,
    `nix-store -q --size`; any Nix version) of the current and desired paths;
@@ -323,7 +321,7 @@ even with `--impure` in `nix.options`), cached by flake identity.
 
 Forced-command routes: diff only from the local store.
 
-## Activation (`a` in the TUI, `hostctl activate <host>…`)
+## Activation (`hostctl activate <host>…`)
 
 Per-host `activate` template + `activate-on` (`target`, default: run on the host;
 `local`: run here, for push tools). Defaults (all use `{flake}`):
@@ -347,15 +345,9 @@ Remote execution is shell-agnostic: the command (PATH prelude + template) is
 uploaded over the unattended channel — inside the `sh -s` program as a quoted
 here-document, so the login shell only ever parses `sh -s` — into a private temp
 file (`umask 077; mktemp`), then run with `ssh -t … sh <path>` (the script
-deletes itself). The
-TUI suspends (after cancelling a running check), runs it with inherited stdio
-(hostctl ignores SIGINT/SIGQUIT meanwhile, like system(3)), waits for Enter,
-resumes and re-probes. The confirmation shows the exact command, never cut
-(wrapped; when the box can't grow enough it scrolls, with where it runs kept
-in view), and exactly that string is executed. `y` copies a paste-safe command:
-`sh -c '<command>'` when it runs here (templates are POSIX sh; fish or zsh
-would misread them bare), `hostctl activate <name>` for remote hosts — with the
-`-c`/`--flake`/`--self` given, like every command hostctl suggests.
+deletes itself). It runs with inherited stdio (hostctl ignores SIGINT/SIGQUIT
+meanwhile, like system(3)), then the host is probed again. The plan shows the
+exact command before asking, and exactly that string is executed.
 
 ## Self detection
 
@@ -403,9 +395,6 @@ command = "ssh"
 options = []                    # extra args; take precedence over hostctl's
 persist = "10m"                 # private ControlMaster lifetime (0 = no multiplexing)
 
-[ui]
-refresh-interval = "0s"         # dashboard auto-refresh (0 = manual; ≥ 60s advised for github: flakes)
-
 [defaults]                      # every host (host tables override)
 destination = "{name}"          # template ({name})
 # ssh-options, activate, activate-on, profile
@@ -433,7 +422,7 @@ build time with `hostctl config check`.
 ## CLI
 
 ```
-hostctl                      # dashboard on a terminal, `status` otherwise
+hostctl                      # status
 hostctl status [PATTERN…] [--json] [--plain]
 hostctl diff HOST [--build] [--json]
 hostctl activate HOST… [--yes] [--force]
@@ -451,73 +440,6 @@ place while it fits (else a one-line progress on stderr) and ends with the same
 bytes as `--plain`, no line cut; in tmux it never floods the scrollback, and
 Ctrl-Z suspends it. The footer lists `update: hostctl activate <outdated…>`
 (with the `-c`/`--flake`/`--self` given).
-
-## TUI
-
-Mid-check, at 120 columns
-(`src/tui/snapshots/hostctl__tui__view__tests__mixed_120x32.snap`):
-
-```
- hostctl  github:jjant/nix-config @ 42ea902 · 2h ago               ⠼ checking 11/12   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 …
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   HOST           KIND          STATUS            GEN  ACTIVATED  DETAIL                                              │
-│ ▶ al2-aarch64    home-manager  ✗ outdated         93  4mo ago    on 1a2b3c4 (4mo old) · graviton desk                │
-│   al2-x86_64     home-manager  ○ not activated                   no home-manager profile                             │
-│   al2023-x86_64  home-manager  ⠼ evaluating 11s   12  3d ago                                                         │
-│   bigmem •       home-manager  ✗ outdated          9  12m ago    unknown generation                                  │
-│   builder        nixos         ! probe failed                    probe output ended early (connection dropped?)      │
-│   desk           nixos         ! eval failed      41  1w ago     path 'wdfh0jh5-gen.drv' is not valid                │
-│   mac-m1         darwin        – offline                         reachable only from a desk you ssh into from the M… │
-│   pi             nixos         ? unreachable                     ssh: Could not resolve hostname pi: Name or servic… │
-│   web1           nixos         ✓ up to date      230  2h ago     ⟳ reboot · specialisation gaming                    │
-│   web2           darwin        ✗ outdated         51  1d ago     staged: switch/reboot pending                       │
-│   web3           nixos         ✗ outdated         77  30m ago    same rev, different build                           │
-│   web4           nixos         ✓ up to date        5  1mo ago                                                        │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.dc-west2.example.com ───────────────────────╮
-│ current  aaaaaaaa-home-manager-generation · gen 93 · activated 4mo ago                                               │
-│ desired  bbbbbbbb-home-manager-generation · 42ea902                                                                  │
-│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                                                                   │
-│ compare  https://github.com/jjant/nix-config/compare/1a2b3c4d5e6f...42ea902131b93c04d098d3bcd02f29305b4bad7c         │
-│ note     graviton desk                                                                                               │
-│ activate on al2-aarch64: out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link                │
-│          --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CP │
-│          Wade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ "$out" =  │
-│          /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-home-manager-generation ] && "$out/activate"                    │
-│ timings  probe 25ms · eval 3.4s                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ select  enter diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit
-```
-
-- Header: the primary flake `@ rev · age`, `· stale` / `· flake.lock out of
-  date`, status counts and, while a check runs, `⠋ checking N/M` (hosts done
-  of all; hosts keep their previous status meanwhile). Why a flake is stale
-  goes on the line under the header, with errors not tied to a host (the
-  latest, `+N more`), and in full in the details of that flake's hosts.
-- Columns HOST · STATUS · GEN · ACTIVATED · DETAIL (+ KIND when wide). When
-  narrow, DETAIL truncates first, then KIND, GEN, ACTIVATED go; HOST and STATUS
-  never do. The local host is marked `•`. The selection is `▶` and its HOST
-  cell reversed: no background under the status colors.
-- Confirmations run only on `y` (`n`/Esc cancel; Enter just says so) and show
-  the whole command: the box grows, then scrolls (↑↓) with where it runs kept
-  in view.
-- `d`/Enter opens a full-screen scrollable diff view (`a` activates, `r` diffs
-  again, `y` copies, `q`/Esc back); when the new generation is in neither this
-  machine's nor the host's store, it says a binary cache may have it and that
-  `b` fetches or builds it (on the host, or here for local hosts and
-  `activate-on = "local"`). On the dashboard `r` is ignored (with a flash)
-  while a check runs. Actions on a busy host are refused.
-- `app.rs` is a pure state machine (`on_key → Command`), `view.rs` renders it
-  (insta snapshots of `TestBackend` buffers at 40/60/80/120 columns), `mod.rs`
-  owns the terminal: the first check starts before terminal setup; the loop
-  sleeps until `App::next_wakeup` (spinner only while busy, flash expiry, age
-  labels, refresh timer), drains the channel before drawing, ≤ 1 frame/16 ms.
-- Terminal restored on exit, error, panic and signals. `NO_COLOR` honored.
-  Untrusted text (remote output, names) is sanitized before it reaches the
-  terminal (ratatui also drops control characters).
 
 ## Process execution
 
@@ -548,14 +470,14 @@ nix develop                     # cargo, clippy, rustfmt, rust-analyzer, cargo-n
                                 # nixfmt, and what the tests use (dash, zsh, fish, busybox, nix, git)
 cargo test                      # unit and integration tests; tests for missing shells are skipped
 HOSTCTL_TEST_NIX=1 cargo test   # also the tests against a real nix
-cargo insta review              # dashboard snapshots
+cargo insta review              # table and JSON snapshots
 nix flake check -L              # everything (see Testing)
 nix fmt                         # format the Nix files
 ```
 
 ## Testing
 
-- Unit tests next to each module (parsers, quoting, config, diff, reducer, keys).
+- Unit tests next to each module (parsers, quoting, config, diff, reducer).
 - Probe script: run for real under dash, `bash --posix`, busybox sh against
   `$HOSTCTL_PROBE_ROOT` trees, BSD `stat` via a PATH shim. Quoting: round-trips
   through sh, bash, zsh, fish. With `HOSTCTL_TEST_REQUIRE_SHELLS=1` (Nix checks) a
@@ -563,7 +485,7 @@ nix fmt                         # format the Nix files
 - Engine: in-process with a scripted runner under paused tokio time — exact
   event sequences, ≤ `jobs` overlapping evals, cache hits spawn no eval, IFD
   retry, flake failure fan-out, stale fallback, cancellation.
-- TUI: `insta` snapshots; key handling unit tests.
+- Output: `insta` snapshots of the tables and the JSON.
 - `tests/`: the real binary (`CARGO_BIN_EXE_hostctl`) against fake `nix`/`ssh`
   (`#!/bin/sh`; the fake ssh runs `sh -s` locally against per-destination
   `HOSTCTL_PROBE_ROOT` trees) — CLI wiring, exit codes, JSON, diff, activation;

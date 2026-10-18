@@ -15,8 +15,8 @@ apply. The hosts only need a POSIX `sh`.
 hostctl --flake github:you/nix-config
 ```
 
-On a terminal this opens a dashboard of all hosts. In a script, or with
-`hostctl status`, it prints a table:
+It checks every host and prints a table (on a terminal, redrawn in place as the
+hosts answer):
 
 ```console
 $ hostctl status
@@ -46,8 +46,7 @@ hostctl hosts              list the hosts and how each one is reached
 ```
 
 `status` exits with 0 when every host is up to date, 1 when some host runs
-something else and 2 when one is unreachable or failed. In the dashboard,
-`Enter` shows the diff, `a` activates, `r` checks again and `?` lists the keys.
+something else and 2 when one is unreachable or failed.
 
 ## Install
 
@@ -86,9 +85,9 @@ builds. The package alone is `inputs.hostctl.packages.${system}.default`.
 
 ## More
 
-- [docs/reference.md](docs/reference.md): the configuration, the dashboard,
-  statuses and exit codes, JSON output, recipes (a host behind a tunnel, push
-  deployments, a shell prompt) and security.
+- [docs/reference.md](docs/reference.md): the configuration, statuses and exit
+  codes, JSON output, recipes (a host behind a tunnel, push deployments, a shell
+  prompt) and security.
 - [DESIGN.md](DESIGN.md): how it works inside, and how to work on it.
 
 ## License

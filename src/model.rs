@@ -205,14 +205,6 @@ impl Status {
         }
     }
 
-    /// The host couldn't be checked.
-    pub fn is_trouble(self) -> bool {
-        matches!(
-            self,
-            Status::EvalFailed | Status::ProbeFailed | Status::Unreachable
-        )
-    }
-
     /// Activating would change something, and bring the host up to date
     /// (an [`Status::Ahead`] host would go back).
     pub fn needs_activation(self) -> bool {
@@ -779,32 +771,9 @@ impl AppState {
         self.flake(url)?.info.get()?.as_ref().ok()
     }
 
-    /// The flake most hosts use (first on ties), for headers.
-    pub fn primary_flake(&self) -> Option<&FlakeState> {
-        self.flakes
-            .iter()
-            .enumerate()
-            .max_by_key(|(i, f)| (f.hosts, std::cmp::Reverse(*i)))
-            .map(|(_, f)| f)
-    }
-
     /// Any work in flight (a check, or a per-host action such as a diff).
     pub fn is_busy(&self) -> bool {
         self.run.is_running() || self.hosts.iter().any(HostState::busy)
-    }
-
-    /// While a check runs: how many hosts it is done with (probed and
-    /// evaluated since it started), and how many there are. Hosts keep
-    /// their previous results meanwhile, so this is what says a refresh
-    /// is still going.
-    pub fn check_progress(&self) -> Option<(usize, usize)> {
-        let started = self.run.running_since?;
-        let done = self
-            .hosts
-            .iter()
-            .filter(|h| h.probe.finished_since(started) && h.eval.finished_since(started))
-            .count();
-        Some((done, self.hosts.len()))
     }
 }
 
@@ -1293,7 +1262,6 @@ mod tests {
         let mut s = AppState::new(vec![host("a", "f"), host("b", "g"), host("c", "g")]);
         assert_eq!(s.command, "hostctl", "without context, plain hostctl");
         assert_eq!(s.flakes.len(), 2);
-        assert_eq!(s.primary_flake().unwrap().url, "g");
         s.apply(Event::RunStarted, Instant::now());
         assert!(s.is_busy());
         s.apply(Event::FlakeStarted { url: "f".into() }, Instant::now());
@@ -1304,72 +1272,6 @@ mod tests {
         probed(&mut s, 99, Ok(report('a')));
         s.apply(Event::FlakeStarted { url: "nope".into() }, Instant::now());
         assert_eq!(s.flakes.len(), 2);
-    }
-
-    #[test]
-    fn check_progress_counts_the_hosts_the_running_check_is_done_with() {
-        let mut s = AppState::new(vec![host("a", "f"), host("b", "f"), host("c", "f")]);
-        let t0 = Instant::now();
-        let at = |ms| t0 + Duration::from_millis(ms);
-        // An earlier check answered for a.
-        s.apply(Event::ProbeStarted(0), t0);
-        s.apply(
-            Event::ProbeFinished {
-                id: 0,
-                result: Ok(report('a')),
-                deployed: None,
-            },
-            t0,
-        );
-        s.apply(
-            Event::EvalFinished {
-                id: 0,
-                result: Ok(desired('a')),
-            },
-            t0,
-        );
-        assert_eq!(s.check_progress(), None, "no check runs");
-
-        s.apply(Event::RunStarted, at(10));
-        for id in 0..3 {
-            s.apply(Event::ProbeStarted(id), at(10));
-        }
-        assert_eq!(s.check_progress(), Some((0, 3)), "old answers don't count");
-        for id in 0..3 {
-            let result = Ok(report('a'));
-            let finished = Event::ProbeFinished {
-                id,
-                result,
-                deployed: None,
-            };
-            s.apply(finished, at(20));
-        }
-        // a from the cache, b evaluating, c queued for an evaluation slot.
-        s.apply(
-            Event::EvalFinished {
-                id: 0,
-                result: Ok(Desired {
-                    cached: true,
-                    ..desired('a')
-                }),
-            },
-            at(30),
-        );
-        s.apply(Event::EvalStarted(1), at(30));
-        assert_eq!(s.check_progress(), Some((1, 3)));
-        for (id, result) in [
-            (1, Ok(desired('b'))),
-            (2, Err(ErrorInfo::msg("attribute missing"))),
-        ] {
-            s.apply(Event::EvalFinished { id, result }, at(35));
-        }
-        assert_eq!(s.check_progress(), Some((3, 3)));
-        s.apply(Event::RunFinished, at(40));
-        assert_eq!(s.check_progress(), None);
-        // An interrupted check is over too.
-        s.apply(Event::RunStarted, at(50));
-        s.apply(Event::Interrupted, at(60));
-        assert_eq!(s.check_progress(), None);
     }
 
     #[test]

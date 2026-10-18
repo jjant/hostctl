@@ -324,29 +324,9 @@ impl Pty {
         cmd.spawn().expect("hostctl runs")
     }
 
-    /// Type `keys`.
-    pub fn send(&self, keys: &[u8]) {
-        use std::io::Write as _;
-        (&self.master).write_all(keys).unwrap();
-    }
-
     /// Everything written so far, escape sequences and all.
     pub fn output(&self) -> String {
         String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned()
-    }
-
-    /// Wait (20 s at most) until `text` has been written.
-    #[track_caller]
-    pub fn wait_for(&self, text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !self.output().contains(text) {
-            assert!(
-                Instant::now() < deadline,
-                "{text:?} never showed up in:\n{:?}",
-                self.output()
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 
     /// What the terminal shows now ([`Screen`]), if it is `cols` × `rows`.
@@ -355,36 +335,9 @@ impl Pty {
         screen.feed(&self.output());
         screen
     }
-
-    /// Wait (20 s at most) until a `cols` × `rows` terminal shows `text`
-    /// (on one row).
-    #[track_caller]
-    pub fn wait_for_screen(&self, cols: usize, rows: usize, text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !self.screen(cols, rows).contains(text) {
-            assert!(
-                Instant::now() < deadline,
-                "{text:?} never showed up on the screen:\n{}",
-                self.screen(cols, rows).rows().join("\n")
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    /// The terminal's settings now, read through the master: on macOS the
-    /// exit of the session leader revokes the slave.
-    pub fn termios(&self) -> libc::termios {
-        use std::os::fd::AsRawFd as _;
-        // SAFETY: all-zero is a valid termios, which tcgetattr fills in.
-        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-        // SAFETY: a valid descriptor and a pointer to a live termios.
-        let read = unsafe { libc::tcgetattr(self.master.as_raw_fd(), &mut termios) };
-        assert_eq!(read, 0, "{}", std::io::Error::last_os_error());
-        termios
-    }
 }
 
-/// Just enough of a terminal to see what the dashboard drew: text (every
+/// Just enough of a terminal to see what hostctl drew: text (every
 /// character one column), `\r`, `\n`, cursor positioning and moves, erasing
 /// (`CSI J`, `CSI K`); colors and modes are ignored, OSC strings skipped,
 /// and entering or leaving the alternate screen clears it.

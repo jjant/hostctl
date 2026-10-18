@@ -108,7 +108,7 @@ pub enum Freshness {
     /// Reuse a resolution younger than `nix.refresh`, else `--refresh`.
     #[default]
     Auto,
-    /// Always `--refresh` (`--refresh`, the TUI's `r`).
+    /// Always `--refresh` (hostctl's `--refresh`).
     Force,
     /// Never touch the network (`--offline`): no `nix flake metadata`, no
     /// evaluation; cached resolutions, results and host lists only. A flake
@@ -225,8 +225,7 @@ impl Engine {
     }
 
     /// This engine with another [`Freshness`], sharing the cache, the
-    /// limits and what was learned so far (e.g. the TUI's refresh, which
-    /// forces re-resolution).
+    /// limits and what was learned so far.
     pub fn with_freshness(&self, freshness: Freshness) -> Engine {
         Engine {
             inner: Arc::clone(&self.inner),
@@ -1435,7 +1434,7 @@ impl Engine {
     }
 
     /// [`Cache::save`] may wait for another process's lock: on a blocking
-    /// thread, so the runtime (and a dashboard on it) keeps going.
+    /// thread, so the runtime keeps going.
     async fn save_cache_off_thread(&self) {
         let inner = Arc::clone(&self.inner);
         let _ = tokio::task::spawn_blocking(move || inner.save_cache()).await;

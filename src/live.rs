@@ -21,7 +21,6 @@ use crate::engine::Engine;
 use crate::model::{AppState, Event, HostId, Status};
 use crate::nix::FlakeInfo;
 use crate::output::{self, Style};
-use crate::tui::view::SPINNER;
 use crate::util;
 
 /// How often the screen is brought up to date while a check runs (the
@@ -30,6 +29,9 @@ const TICK: Duration = Duration::from_millis(80);
 
 /// A wait shorter than this shows no spinner.
 const SPINNER_DELAY: Duration = Duration::from_millis(250);
+
+/// The spinner's frames.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Run a check of `hosts`, redrawing [`crate::output::status_table`] in
 /// place on stdout (move up, rewrite each row, clear what is left) on each

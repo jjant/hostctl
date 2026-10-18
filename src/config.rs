@@ -172,7 +172,6 @@ pub struct Config {
     pub cache: bool,
     pub nix: NixConfig,
     pub ssh: SshConfig,
-    pub ui: UiConfig,
     /// Applied to every host; `destination` may use `{name}`.
     #[serde(skip_serializing_if = "HostConfig::is_empty")]
     pub defaults: HostConfig,
@@ -194,7 +193,6 @@ impl Default for Config {
             cache: true,
             nix: NixConfig::default(),
             ssh: SshConfig::default(),
-            ui: UiConfig::default(),
             defaults: HostConfig::default(),
             hosts: BTreeMap::new(),
         }
@@ -247,13 +245,6 @@ impl Default for SshConfig {
             persist: HumanDuration::from_secs(600),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub struct UiConfig {
-    /// Dashboard auto-refresh; 0 = manual only.
-    pub refresh_interval: HumanDuration,
 }
 
 /// One `[hosts.<name>]` table, the `[defaults]` table, or one entry of a
@@ -1341,9 +1332,6 @@ mod tests {
                 options: strings(&["-F", "/dev/null"]),
                 persist: HumanDuration::from_secs(5400),
             },
-            ui: UiConfig {
-                refresh_interval: HumanDuration::from_secs(90),
-            },
             defaults: HostConfig {
                 destination: Some("{name}.tailnet.example".into()),
                 ssh_options: Some(strings(&["-4"])),
@@ -1367,7 +1355,6 @@ mod tests {
         assert_eq!(defaults.inventory, "lib.hostctl");
         assert_eq!(defaults.nix.refresh, HumanDuration::from_secs(60));
         assert_eq!(defaults.ssh.persist, HumanDuration::from_secs(600));
-        assert!(defaults.ui.refresh_interval.is_zero());
     }
 
     #[test]
@@ -1394,9 +1381,6 @@ mod tests {
             command = "/usr/bin/ssh"
             options = ["-F", "/dev/null"]
             persist = "0s"
-
-            [ui]
-            refresh-interval = "2m"
 
             [defaults]
             destination = "{name}.tailnet.example"
@@ -1443,7 +1427,6 @@ mod tests {
                 persist: HumanDuration::from_secs(0),
             }
         );
-        assert_eq!(config.ui.refresh_interval, HumanDuration::from_secs(120));
         assert_eq!(
             config.defaults.destination.as_deref(),
             Some("{name}.tailnet.example")
@@ -1460,7 +1443,7 @@ mod tests {
             ("flake = \"f\"\nflakes = \"g\"\n", "flakes", 2),
             ("[nix]\nread_only = false\n", "read_only", 2),
             ("[ssh]\n\npersists = \"1m\"\n", "persists", 3),
-            ("[ui]\nrefresh = \"1m\"\n", "refresh", 2),
+            ("[ui]\nrefresh-interval = \"1m\"\n", "ui", 1),
             ("[defaults]\ndestinaton = \"{name}\"\n", "destinaton", 2),
             (
                 "[hosts.bigmem]\nkind = \"home-manager\"\nhostname = \"bigmem\"\n",
@@ -1836,9 +1819,7 @@ mod tests {
             assert_eq!(parse_error(toml), want, "{toml:?}");
         }
         // Zero means "off" everywhere else.
-        parse(
-            "eval-timeout = 0\n[nix]\nrefresh = 0\n[ssh]\npersist = 0\n[ui]\nrefresh-interval = 0\n",
-        );
+        parse("eval-timeout = 0\n[nix]\nrefresh = 0\n[ssh]\npersist = 0\n");
     }
 
     #[test]
@@ -2047,8 +2028,7 @@ mod tests {
             "timeout = \"20s\"\neval-timeout = \"10m\"\ndiscover = true\n\
              inventory = \"lib.hostctl\"\ncache = true\n\n\
              [nix]\ncommand = \"nix\"\noptions = []\nread-only = true\nrefresh = \"1m\"\n\n\
-             [ssh]\ncommand = \"ssh\"\noptions = []\npersist = \"10m\"\n\n\
-             [ui]\nrefresh-interval = \"0s\"\n"
+             [ssh]\ncommand = \"ssh\"\noptions = []\npersist = \"10m\"\n"
         );
     }
 
@@ -2855,7 +2835,7 @@ mod tests {
                 }
             }
         }
-        assert!(keys.len() > 25, "{keys:?}");
+        assert!(keys.len() >= 25, "{keys:?}");
         for key in keys {
             let documented = EXAMPLE.lines().any(|line| {
                 line.trim_start_matches(['#', ' '])

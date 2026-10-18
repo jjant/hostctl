@@ -219,39 +219,6 @@ pub fn format_size_delta(delta: i64) -> String {
     }
 }
 
-/// Standard base64 (RFC 4648, with padding).
-pub fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// The OSC 52 escape sequence that asks the terminal to put `text` on the
-/// system clipboard. Works over ssh and inside tmux (with `set-clipboard on`).
-pub fn osc52(text: &str) -> String {
-    format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
-}
-
 /// Whole-string shell-style glob match: `*`, `?`, `[abc]`, `[a-z]`, `[!x]`,
 /// and `\` to escape. An unterminated `[` matches itself.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
@@ -364,16 +331,6 @@ pub fn truncate(s: &str, max: usize) -> Cow<'_, str> {
     }
     out.push('…');
     Cow::Owned(out)
-}
-
-/// Pad `s` with spaces to `width` terminal columns (no-op if already wider).
-pub fn pad(s: &str, width: usize) -> String {
-    let w = s.width();
-    if w >= width {
-        s.to_string()
-    } else {
-        format!("{s}{}", " ".repeat(width - w))
-    }
 }
 
 /// Seconds since the unix epoch (0 if the clock is before it).
@@ -618,23 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn base64_matches_rfc4648_vectors() {
-        let cases = [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ];
-        for (input, want) in cases {
-            assert_eq!(base64_encode(input.as_bytes()), want, "{input:?}");
-        }
-        assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
-    }
-
-    #[test]
     fn globs() {
         assert!(glob_match("bigmem", "bigmem"));
         assert!(!glob_match("bigmem", "bigmem2"));
@@ -665,9 +605,6 @@ mod tests {
         assert_eq!(truncate("hello", 1), "…");
         assert_eq!(truncate("hello", 0), "");
         assert_eq!(truncate("日本語", 5), "日本…");
-        assert_eq!(pad("ab", 4), "ab  ");
-        assert_eq!(pad("abcdef", 4), "abcdef");
-        assert_eq!(pad("日本", 5), "日本 ");
     }
 
     #[test]

@@ -3,7 +3,6 @@
 The details the [README](../README.md) leaves out.
 
 - [Command line](#command-line)
-- [The dashboard](#the-dashboard)
 - [Statuses](#statuses)
 - [Configuration](#configuration)
 - [Inventory](#inventory)
@@ -16,8 +15,7 @@ The details the [README](../README.md) leaves out.
 ## Command line
 
 ```text
-hostctl                         the dashboard on a terminal, `status` otherwise
-hostctl tui [PATTERN…]          the dashboard
+hostctl                         status
 hostctl status [PATTERN…]       check and print a table   [--json] [--plain]
 hostctl diff HOST               what activating would change (closure diff)   [--build] [--json]
 hostctl activate HOST…          activate the compared generation   [--yes] [--force]
@@ -45,69 +43,10 @@ results show `not cached; run hostctl once without --offline`.
 
 `diff` lists package changes the way `nix store diff-closures` groups them,
 from both closures read on the host. When the desired generation exists
-nowhere yet, `--build` (or `b` in the dashboard) builds or fetches it on the
+nowhere yet, `--build` builds or fetches it on the
 host first, interactively and without activating. `activate` shows the exact
 command and where it runs, asks, runs it with your terminal attached and
 re-checks the host.
-
-## The dashboard
-
-<!-- The dashboard mid-check: src/tui/snapshots/hostctl__tui__view__tests__mixed_120x32.snap -->
-```text
- hostctl  github:jjant/nix-config @ 42ea902 · 2h ago               ⠼ checking 11/12   2 ✓  4 ✗  1 ○  2 !  1 ?  1 –  1 …
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   HOST           KIND          STATUS            GEN  ACTIVATED  DETAIL                                              │
-│ ▶ al2-aarch64    home-manager  ✗ outdated         93  4mo ago    on 1a2b3c4 (4mo old) · graviton desk                │
-│   al2-x86_64     home-manager  ○ not activated                   no home-manager profile                             │
-│   al2023-x86_64  home-manager  ⠼ evaluating 11s   12  3d ago                                                         │
-│   bigmem •       home-manager  ✗ outdated          9  12m ago    unknown generation                                  │
-│   builder        nixos         ! probe failed                    probe output ended early (connection dropped?)      │
-│   desk           nixos         ! eval failed      41  1w ago     path 'wdfh0jh5-gen.drv' is not valid                │
-│   mac-m1         darwin        – offline                         reachable only from a desk you ssh into from the M… │
-│   pi             nixos         ? unreachable                     ssh: Could not resolve hostname pi: Name or servic… │
-│   web1           nixos         ✓ up to date      230  2h ago     ⟳ reboot · specialisation gaming                    │
-│   web2           darwin        ✗ outdated         51  1d ago     staged: switch/reboot pending                       │
-│   web3           nixos         ✗ outdated         77  30m ago    same rev, different build                           │
-│   web4           nixos         ✓ up to date        5  1mo ago                                                        │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ al2-aarch64 · home-manager · x86_64-linux · devhost-devuser1-2c-2b7c5f39.dc-west2.example.com ───────────────────────╮
-│ current  aaaaaaaa-home-manager-generation · gen 93 · activated 4mo ago                                               │
-│ desired  bbbbbbbb-home-manager-generation · 42ea902                                                                  │
-│ drift    on 1a2b3c4 (4mo old), per hostctl's cache                                                                   │
-│ compare  https://github.com/jjant/nix-config/compare/1a2b3c4d5e6f...42ea902131b93c04d098d3bcd02f29305b4bad7c         │
-│ note     graviton desk                                                                                               │
-│ activate on al2-aarch64: out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link                │
-│          --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CP │
-│          Wade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ "$out" =  │
-│          /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-home-manager-generation ] && "$out/activate"                    │
-│ timings  probe 25ms · eval 3.4s                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ select  enter diff  a activate  y copy  r refresh  / filter  s sort  ? help  q quit
-```
-
-| key             | dashboard                                   |
-| --------------- | ------------------------------------------- |
-| `↑` `↓` `j` `k` | select (`g` `G` `Home` `End` `PgUp` `PgDn`) |
-| `Enter` `d`     | closure diff of the selected host           |
-| `a`             | activate (asks first)                       |
-| `y`             | copy a paste-safe command (OSC 52)          |
-| `r`             | check again                                 |
-| `/`             | filter (`Esc` clears)                       |
-| `s`             | sort by name / status                       |
-| `J` `K`         | scroll the details                          |
-| `?`             | help                                        |
-| `q` `Ctrl-C`    | quit                                        |
-
-In the diff view `j`/`k`/`PgUp`/`PgDn` scroll, `a` activates, `r` diffs again,
-`y` copies, `b` fetches or builds a missing new generation and `q`/`Esc` go
-back; a confirmation shows the whole command (`↑`/`↓` scroll it when it
-doesn't fit) and runs it only on `y` (`n`/`Esc` cancel; `Enter` just says so).
-`y` copies `sh -c '<command>'` for commands that run on this machine and
-`hostctl activate <name>` (with the `-c`/`--flake`/`--self` you passed) for
-remote hosts, so pasting it into any shell does the right thing.
 
 ## Statuses
 
@@ -213,7 +152,6 @@ activate-on = "local"
 | `ssh.command`         | `"ssh"` | the ssh executable                                                                                                       |
 | `ssh.options`         | `[]`    | extra arguments for every ssh run; they win over hostctl's own (with `-F FILE`, ssh reads FILE instead of ~/.ssh/config) |
 | `ssh.persist`         | `"10m"` | lifetime of hostctl's private ControlMaster connections; `0` = no multiplexing                                           |
-| `ui.refresh-interval` | `"0s"`  | dashboard auto-refresh; `0` = manual (`r`); for `github:` flakes, ≥ 60s is advised                                       |
 
 ### Hosts
 

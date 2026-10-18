@@ -155,7 +155,7 @@ fn trouble_wins_over_outdated() {
 
     let run = w.run(&["status", "--plain"]);
     run.code(2);
-    // The hint goes to the details (JSON, dashboard), not the table.
+    // The hint goes to the details (JSON), not the table.
     assert!(
         run.stdout
             .contains("  web2  ? unreachable  ssh: Could not resolve hostname web2: Name or service not known\n"),
@@ -342,7 +342,7 @@ fn usage_errors_exit_3_and_help_exits_0() {
     help.code(0);
     assert!(
         help.stdout
-            .contains("Exit codes: 0 up to date, 1 outdated, 2 trouble"),
+            .contains("Exit codes: 0 up to date, 1 outdated or ahead, 2 trouble"),
         "{help}"
     );
     let version = w.run(&["--version"]);
@@ -350,17 +350,6 @@ fn usage_errors_exit_3_and_help_exits_0() {
     assert_eq!(
         version.stdout,
         format!("hostctl {}\n", env!("CARGO_PKG_VERSION"))
-    );
-}
-
-#[test]
-fn the_dashboard_needs_a_terminal() {
-    let w = World::new();
-    let run = w.run(&["tui"]);
-    run.code(3);
-    assert_eq!(
-        run.stderr,
-        "error: the dashboard needs a terminal (stdout isn't one): use `hostctl status`\n"
     );
 }
 
@@ -2082,114 +2071,6 @@ fn activating_this_machine_runs_here() {
         "no ssh: {}",
         w.log()
     );
-}
-
-// ─── the dashboard, on a terminal ───────────────────────────────────────
-
-#[test]
-fn a_signal_at_the_press_enter_prompt_leaves_the_terminal_as_it_was() {
-    let (w, _host) = activation_world();
-    w.env("TERM", Some("xterm-256color"));
-    let pty = Pty::new(100, 30);
-    let before = pty.termios();
-    let child = pty.spawn(w.command(&["tui"]));
-    pty.wait_for("outdated");
-    // The dashboard runs in raw mode, and termios() sees it.
-    assert_eq!(pty.termios().c_lflag & libc::ICANON, 0);
-    pty.send(b"a");
-    pty.wait_for("Activate web1?");
-    pty.send(b"y");
-    pty.wait_for("Press Enter to return.");
-    // SAFETY: a plain syscall.
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
-    assert_eq!(wait(child), 130, "{:?}", pty.output());
-    let after = pty.termios();
-    for flag in [libc::ICANON, libc::ECHO, libc::ISIG] {
-        assert_eq!(
-            after.c_lflag & flag,
-            before.c_lflag & flag,
-            "raw mode left behind ({flag:#x})"
-        );
-    }
-}
-
-#[test]
-fn the_dashboard_starts_with_the_hosts_read_last_and_reads_them_again() {
-    let w = World::new();
-    w.flake(REV1);
-    discover_home(&w, &["web1", "web2"]);
-    home_host(&w, "web1", &hm('a'), &hm('a'));
-    home_host(&w, "web2", &hm('b'), &hm('b'));
-    w.run(&["status"]).code(0);
-    // Since then, web2 went and web3 came.
-    w.flake(REV2).delay(0.3);
-    discover_home(&w, &["web1", "web3"]);
-    home_host(&w, "web3", &hm('c'), &hm('c'));
-    w.clear_log();
-    w.env("TERM", Some("xterm-256color"));
-    let pty = Pty::new(100, 30);
-    let child = pty.spawn(w.command(&["--refresh", "tui"]));
-    pty.wait_for_screen(100, 30, "the flake's hosts changed (new: web3; gone: web2)");
-    pty.wait_for_screen(100, 30, "web3  home-manager  ✓ up to date");
-    pty.send(b"q");
-    assert_eq!(wait(child), 0, "{}", pty.screen(100, 30).rows().join("\n"));
-    let resolutions = w.resolutions();
-    assert_eq!(resolutions.len(), 1, "{}", w.log());
-    let first_probe = w.calls().into_iter().find(|c| c.tool == "ssh").unwrap();
-    assert!(
-        Some(first_probe.start) < resolutions[0].end,
-        "probed at once:\n{}",
-        w.log()
-    );
-}
-
-#[test]
-fn a_refresh_finds_the_hosts_the_flake_has_now() {
-    let w = World::new();
-    w.flake(REV1);
-    discover_home(&w, &["web1", "web2"]);
-    home_host(&w, "web1", &hm('a'), &hm('a'));
-    home_host(&w, "web2", &hm('b'), &hm('b'));
-    w.env("TERM", Some("xterm-256color"));
-    let pty = Pty::new(100, 30);
-    let child = pty.spawn(w.command(&["tui"]));
-    pty.wait_for_screen(100, 30, "2 ✓");
-    // The flake moves on: web2 is gone (and no longer evaluates), web3 new.
-    w.flake(REV2);
-    discover_home(&w, &["web1", "web3"]);
-    w.eval_fails(&hm_attr("web2"), "error: attribute 'web2' missing\n")
-        .delay(3.0);
-    home_host(&w, "web3", &hm('c'), &hm('c'));
-    let changed = "the flake's hosts changed (new: web3; gone: web2)";
-    // `r` is refused while the first check finishes.
-    for _ in 0..40 {
-        pty.send(b"r");
-        std::thread::sleep(Duration::from_millis(250));
-        if pty.screen(100, 30).contains(changed) {
-            break;
-        }
-    }
-    pty.wait_for_screen(100, 30, changed);
-    pty.wait_for_screen(100, 30, "web3  home-manager  ✓ up to date");
-    let screen = pty.screen(100, 30);
-    assert!(
-        !screen.contains("web2  home-manager"),
-        "{}",
-        screen.rows().join("\n")
-    );
-    pty.send(b"q");
-    assert_eq!(wait(child), 0, "{}", pty.screen(100, 30).rows().join("\n"));
-    assert!(
-        !pty.output().contains("eval failed"),
-        "web2 was checked against a flake without it"
-    );
-    // The refresh resolved the flake once, for its check and the hosts.
-    let refreshed: Vec<Call> = w
-        .resolutions()
-        .into_iter()
-        .filter(|c| c.args.contains("--refresh"))
-        .collect();
-    assert_eq!(refreshed.len(), 2, "{}", w.log());
 }
 
 // ─── config, completions ────────────────────────────────────────────────

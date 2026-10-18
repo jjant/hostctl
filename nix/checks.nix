@@ -96,8 +96,8 @@ let
     }
     {
       # The declared defaults (flake = null, hosts = { }) leave no trace.
-      settings.ui.refresh-interval = "1m";
-      expected.ui.refresh-interval = "1m";
+      settings.ssh.persist = "1m";
+      expected.ssh.persist = "1m";
     }
   ];
 
