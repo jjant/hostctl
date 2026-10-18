@@ -257,13 +257,16 @@ pub const UNATTENDED_OPTIONS: &[&str] = &[
 ];
 
 /// Interactive (activation) options: a TTY; forwardings from the user's
-/// config are cleared, but agent forwarding and prompts stay available.
+/// config are cleared, but agent forwarding and prompts stay available;
+/// errors only (no "Connection to … closed." after it).
 pub const INTERACTIVE_OPTIONS: &[&str] = &[
     "-t",
     "-o",
     "ControlMaster=no",
     "-o",
     "ClearAllForwardings=yes",
+    "-o",
+    "LogLevel=ERROR",
 ];
 
 /// Connection multiplexing for unattended runs.
@@ -1347,7 +1350,9 @@ mod tests {
                     "-o",
                     "ControlMaster=no",
                     "-o",
-                    "ClearAllForwardings=yes"
+                    "ClearAllForwardings=yes",
+                    "-o",
+                    "LogLevel=ERROR"
                 ],
                 &["-p", "2222", "--", "jj@web1", "sh", "/tmp/hostctl.AbC123"],
             ])

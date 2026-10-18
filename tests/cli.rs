@@ -1941,9 +1941,9 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
         "a private temporary file: {uploaded}"
     );
     assert!(
-        calls[2]
-            .args
-            .starts_with("-t -o ControlMaster=no -o ClearAllForwardings=yes -- web1 sh "),
+        calls[2].args.starts_with(
+            "-t -o ControlMaster=no -o ClearAllForwardings=yes -o LogLevel=ERROR -- web1 sh "
+        ),
         "{}",
         calls[2].args
     );
