@@ -82,8 +82,9 @@ const CYAN: &str = "36";
 ///   activation (not ahead ones) and have an activation (`hostctl` as
 ///   [`AppState::command`] says, with the flags this run was given); then
 ///   `error: <summary>` per global error;
-/// - with `style.color`: green ✓, blue ↑, yellow ✗ and ○, red !, magenta ?,
-///   cyan pending, dim offline, detail and footer.
+/// - with `style.color`: icon and label green ✓, blue ↑, yellow ✗ and ○,
+///   red !, magenta ?, cyan pending, dim offline; ` (this host)` cyan;
+///   revisions yellow; the rest of the detail and `update:` dim.
 ///
 /// Untrusted text (names, notes, probe answers) is sanitized and kept on
 /// one line.
@@ -131,9 +132,10 @@ fn render_status(
             if row.detail.is_empty() {
                 line.push(&row.label, color);
             } else {
-                line.padded(&row.label, color, label_w)
-                    .push("  ", PLAIN)
-                    .push(&row.detail, DIM);
+                line.padded(&row.label, color, label_w).push("  ", PLAIN);
+                for (text, code) in &row.detail.pieces {
+                    line.push(text.as_str(), code);
+                }
             }
             line.write(&mut out, style, width);
         }
@@ -165,7 +167,7 @@ struct Row<'a> {
     status: Status,
     name: Name<'a>,
     label: String,
-    detail: String,
+    detail: Detail,
 }
 
 impl<'a> Row<'a> {
@@ -240,21 +242,52 @@ fn ticking(d: Duration) -> Option<String> {
     }
 }
 
+/// The detail cell: ` · `-separated items, dim but for revisions (yellow).
+#[derive(Default)]
+struct Detail {
+    pieces: Vec<(String, &'static str)>,
+}
+
+impl Detail {
+    /// Append a dim item; empty items are skipped.
+    fn item(&mut self, text: impl fmt::Display) {
+        self.styled([(text.to_string(), DIM)]);
+    }
+
+    /// Append an item of styled pieces; empty pieces are skipped.
+    fn styled(&mut self, pieces: impl IntoIterator<Item = (String, &'static str)>) {
+        let start = self.pieces.len();
+        if start > 0 {
+            self.pieces.push((" · ".into(), DIM));
+        }
+        let separator = self.pieces.len();
+        self.pieces
+            .extend(pieces.into_iter().filter(|(text, _)| !text.is_empty()));
+        if self.pieces.len() == separator {
+            self.pieces.truncate(start);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pieces.is_empty()
+    }
+}
+
 /// The detail cell (see [`status_table`]).
-fn detail(h: &HostState, status: Status, now_unix: i64) -> String {
-    let mut out = String::new();
+fn detail(h: &HostState, status: Status, now_unix: i64) -> Detail {
+    let mut out = Detail::default();
     let report = h.report();
     match status {
         Status::UpToDate | Status::Outdated | Status::Ahead => {
-            if let Some(text) = h.drift().and_then(|drift| drift_text(&drift, now_unix)) {
-                item(&mut out, text);
+            if let Some(drift) = h.drift() {
+                out.styled(drift_text(&drift, now_unix));
             }
             if let Some(r) = report {
                 if r.reboot_required {
-                    item(&mut out, "⟳ reboot");
+                    out.item("⟳ reboot");
                 }
                 if let Some(name) = &r.specialisation {
-                    item(&mut out, format_args!("specialisation {}", one_line(name)));
+                    out.item(format_args!("specialisation {}", one_line(name)));
                 }
             }
         }
@@ -263,39 +296,40 @@ fn detail(h: &HostState, status: Status, now_unix: i64) -> String {
                 .and_then(|r| r.none_reason.as_deref())
                 .filter(|reason| !reason.trim().is_empty())
                 .unwrap_or("no active generation");
-            item(&mut out, one_line(reason));
+            out.item(one_line(reason));
         }
         Status::EvalFailed => {
             if let Some(Err(error)) = h.eval.get() {
-                item(&mut out, one_line(&error.summary));
+                out.item(one_line(&error.summary));
             }
         }
         Status::ProbeFailed | Status::Unreachable => {
             if let Some(Err(failure)) = h.probe.get() {
-                item(&mut out, one_line(&failure.error.summary));
+                out.item(one_line(&failure.error.summary));
             }
         }
         // Being unreachable is expected; a note explains it better than ssh.
         Status::Offline => {
             if let (None, Some(Err(failure))) = (&h.host.note, h.probe.get()) {
-                item(&mut out, one_line(&failure.error.summary));
+                out.item(one_line(&failure.error.summary));
             }
         }
         Status::Pending => {}
     }
     if let Some(note) = &h.host.note {
-        item(&mut out, one_line(note));
+        out.item(one_line(note));
     }
     out
 }
 
-/// What the detail cell says about `drift`: nothing when the revision a
-/// host runs is unknown.
-fn drift_text(drift: &Drift, now_unix: i64) -> Option<Cow<'static, str>> {
-    Some(match drift {
-        Drift::Staged => "staged: switch/reboot pending".into(),
-        Drift::SameRevision => "same rev, different build".into(),
-        Drift::Unknown => return None,
+/// What the detail cell says about `drift`, the revision in yellow: nothing
+/// when the revision a host runs is unknown.
+fn drift_text(drift: &Drift, now_unix: i64) -> Vec<(String, &'static str)> {
+    let text = |text: &str| (text.to_string(), DIM);
+    match drift {
+        Drift::Staged => vec![text("staged: switch/reboot pending")],
+        Drift::SameRevision => vec![text("same rev, different build")],
+        Drift::Unknown => vec![],
         Drift::Revision {
             rev,
             last_modified,
@@ -303,21 +337,26 @@ fn drift_text(drift: &Drift, now_unix: i64) -> Option<Cow<'static, str>> {
             branches,
             ..
         } => {
-            let rev = short_rev(rev);
+            let rev = (short_rev(rev), YELLOW);
             let age = match (newer_by, last_modified) {
                 (Some(by), _) => Some(format!("{} newer", age(0, *by))),
                 (None, Some(at)) => Some(format!("{} old", age(*at, now_unix))),
                 (None, None) => None,
             };
             match (branches.first(), age) {
-                (Some(branch), Some(age)) => format!("on {} ({rev}, {age})", one_line(branch)),
-                (Some(branch), None) => format!("on {} ({rev})", one_line(branch)),
-                (None, Some(age)) => format!("on {rev} ({age})"),
-                (None, None) => format!("on {rev}"),
+                (Some(branch), Some(age)) => vec![
+                    text(&format!("on {} (", one_line(branch))),
+                    rev,
+                    text(&format!(", {age})")),
+                ],
+                (Some(branch), None) => {
+                    vec![text(&format!("on {} (", one_line(branch))), rev, text(")")]
+                }
+                (None, Some(age)) => vec![text("on "), rev, text(&format!(" ({age})"))],
+                (None, None) => vec![text("on "), rev],
             }
-            .into()
         }
-    })
+    }
 }
 
 /// A revision cut to 7 characters, keeping a `-dirty` suffix.
@@ -349,7 +388,8 @@ fn flake_line<'a>(state: &AppState, flake: &'a FlakeState, now_unix: i64) -> Lin
     match flake.info.get() {
         Some(Ok(info)) => {
             if info.rev.is_some() || info.dirty_rev.is_some() {
-                line.push(format!(" @ {}", one_line(&info.short_rev())), PLAIN);
+                line.push(" @ ", PLAIN)
+                    .push(one_line(&info.short_rev()).into_owned(), YELLOW);
             }
             if let Some(at) = info.last_modified {
                 line.push(format!(" ({})", format_ago(at, now_unix)), DIM);
@@ -1008,20 +1048,6 @@ fn spaces(n: usize) -> Cow<'static, str> {
     }
 }
 
-/// Append `item` to the ` · `-separated list in `out`; empty items are
-/// skipped.
-fn item(out: &mut String, item: impl fmt::Display) {
-    let start = out.len();
-    if start > 0 {
-        out.push_str(" · ");
-    }
-    let text = out.len();
-    let _ = write!(out, "{item}");
-    if out.len() == text {
-        out.truncate(start);
-    }
-}
-
 /// A blank line between sections (none before the first).
 fn section_break(out: &mut String) {
     if !out.is_empty() {
@@ -1582,7 +1608,8 @@ update: hostctl activate al2-aarch64 al2-x86_64
             "\x1b[2m–\x1b[0m mac-m1              \x1b[2moffline\x1b[0m",
             "\x1b[36m…\x1b[0m al2023-x86_64       \x1b[36mevaluating 12s\x1b[0m",
             "\x1b[34m↑\x1b[0m tryout              \x1b[34mahead\x1b[0m",
-            "\x1b[1mgithub:jjant/nix-config\x1b[0m",
+            "\x1b[1mgithub:jjant/nix-config\x1b[0m @ \x1b[33m42ea902\x1b[0m",
+            "\x1b[2mon \x1b[0m\x1b[33m1a2b3c4\x1b[0m\x1b[2m (4mo old)\x1b[0m",
         ] {
             assert!(
                 colored.contains(painted),
@@ -2277,11 +2304,20 @@ update: hostctl activate al2-aarch64 al2-x86_64
         assert_eq!(age(NOW - 3 * HOUR, NOW), "3h");
         assert_eq!(age(NOW - 10, NOW), "<1m");
         assert_eq!(age(NOW + 100, NOW), "<1m");
-        let mut list = String::new();
-        item(&mut list, "a");
-        item(&mut list, "");
-        item(&mut list, format_args!("{}", 2));
-        assert_eq!(list, "a · 2");
+        let mut detail = Detail::default();
+        detail.item("a");
+        detail.item("");
+        detail.styled([(String::new(), YELLOW)]);
+        detail.styled([("2".into(), YELLOW), ("!".into(), DIM)]);
+        let pieces: Vec<_> = detail
+            .pieces
+            .iter()
+            .map(|(t, c)| (t.as_str(), *c))
+            .collect();
+        assert_eq!(
+            pieces,
+            [("a", DIM), (" · ", DIM), ("2", YELLOW), ("!", DIM)]
+        );
     }
 
     #[test]
