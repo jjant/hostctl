@@ -79,9 +79,10 @@ isn't in the `update:` suggestion, `hostctl activate` skips it unless
 `--force`, and activating it warns that it goes back. It reads `on feat/x
 (878d66c, 8h newer)` when `git ls-remote --heads` of the flake's repository
 (with git on `PATH`) has a branch at that commit. To date a recorded revision it
-hasn't evaluated, hostctl fetches that commit of the flake's repository after
-the check (github, gitlab, sourcehut or git flakes; once per commit, again an
-hour after a failure or on `--refresh`, never `--offline`).
+hasn't evaluated, hostctl fetches that commit of the flake's repository
+during the check (github, gitlab, sourcehut or git flakes; once per commit,
+again an hour after a failure or on `--refresh`, never `--offline`); the host
+shows `looking up its commit` meanwhile.
 
 **Drift** says why an outdated host differs: `on <rev> (<age> old)` (the
 revision it runs, recorded by the generation itself as `configurationRevision`

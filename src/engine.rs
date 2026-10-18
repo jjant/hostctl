@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap};
 use std::fs::{DirBuilder, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -21,8 +21,8 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use futures_util::future::{BoxFuture, FutureExt as _, Shared, WeakShared};
 use futures_util::stream::FuturesUnordered;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{OnceCell, Semaphore, SemaphorePermit};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::{Notify, OnceCell, Semaphore, SemaphorePermit, oneshot};
 use tokio::time::Instant;
 
 use crate::actions;
@@ -57,15 +57,17 @@ pub const MAX_NEW_CONNECTIONS: usize = 10;
 /// `nix --version` gets this long.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long looking up a revision's commit time may take (it may fetch the
-/// revision; [`Engine::date_revisions`]).
+/// How long looking up when a revision was committed (which may fetch it),
+/// or the branches of its repository, may take
+/// ([`Engine::look_up_revisions`]).
 const DATING_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How much longer than its probes and evaluations a check may take to date
-/// revisions.
+/// How much longer than its probes and evaluations a check waits for
+/// revision lookups.
 const DATING_BUDGET: Duration = Duration::from_secs(30);
 
-/// Revision lookups at once (each may download a tarball).
+/// Commit-time lookups at once (each may download a tarball), and the same
+/// for branch lookups.
 const DATING_JOBS: usize = 4;
 
 /// [`Engine::discard_upload`] gets at most this long: it is only tidying up.
@@ -383,10 +385,14 @@ impl Engine {
     /// - the cache is saved when the check completes.
     ///
     /// Events: `RunStarted`, every `ProbeStarted` (in `hosts` order), every
-    /// `FlakeStarted`, then results as they arrive, any `RevisionDated` and
-    /// `RevisionBranches`, `RunFinished` last.
+    /// `FlakeStarted`, then results as they arrive (a `RevisionLookedUp`
+    /// after each `ProbeFinished` that is `looking_up`, unless the check
+    /// gives up on it), `RunFinished` last.
     pub async fn check(&self, hosts: &[(HostId, Host)], known: &[FlakeInfo], tx: &EventTx) {
-        let run = Run::new(tx);
+        let (lookups, requested) = mpsc::unbounded_channel();
+        let mut run = Run::new(tx);
+        // Lookups may fetch.
+        run.lookups = Mutex::new((self.freshness != Freshness::Offline).then_some(lookups));
         run.send(Event::RunStarted);
         for (id, _) in hosts {
             run.send(Event::ProbeStarted(*id));
@@ -400,11 +406,28 @@ impl Engine {
                 }),
             }
         }
-        tokio::join!(
-            self.probe_hosts(&run, hosts),
-            self.evaluate_flakes(&run, &flakes)
-        );
-        tokio::join!(self.date_revisions(&run), self.find_branches(&run));
+        let (checked, done) = oneshot::channel();
+        let checking = async {
+            tokio::join!(
+                self.probe_hosts(&run, hosts),
+                self.evaluate_flakes(&run, &flakes)
+            );
+            run.checked();
+            let _ = checked.send(());
+        };
+        let looking_up = async {
+            let lookups = pin!(self.look_up_revisions(&run, requested));
+            // What isn't looked up by then is tried again next time.
+            let budget = async {
+                let _ = done.await;
+                tokio::time::sleep(DATING_BUDGET).await;
+            };
+            tokio::select! {
+                () = lookups => {}
+                () = budget => {}
+            }
+        };
+        tokio::join!(checking, looking_up);
         self.save_cache_off_thread().await;
         run.send(Event::RunFinished);
     }
@@ -648,8 +671,9 @@ impl Engine {
             ResolveError::Spawn(error) => self.nix_unrunnable(run, &error),
             ResolveError::Failed(error) => error,
         });
-        if let Ok(info) = &result {
-            run.resolved(info);
+        match &result {
+            Ok(info) => run.resolved(info),
+            Err(_) => run.unresolved(url),
         }
         run.send(Event::FlakeFinished {
             url: url.to_string(),
@@ -903,102 +927,164 @@ impl Engine {
 
     /// `ProbeFinished`, with what the cache knows about the generation: the
     /// revision it was evaluated at, or the time of the revision it records.
-    /// A recorded revision the cache can't date is looked up later.
+    /// A recorded revision is then looked up ([`Self::look_up_revisions`];
+    /// its time only if the cache lacks it), when the check does lookups.
     fn probe_finished(&self, run: &Run<'_>, id: HostId, host: &Host, result: ProbeResult) {
         let report = result.as_ref().ok();
         let mut deployed = report
             .and_then(|report| report.deployed())
             .and_then(|path| self.with_cache(|cache| cache.deployed_rev(path)));
-        if let Some(rev) = report.and_then(|report| report.revision.as_deref()) {
-            if nix::is_commit_hash(rev) {
-                run.recorded(&host.flake, rev);
-            }
+        let recorded = report
+            .and_then(|report| report.revision.clone())
+            .filter(|rev| nix::is_commit_hash(rev));
+        let mut date = false;
+        if let Some(rev) = &recorded {
             let dated = deployed
                 .as_ref()
-                .is_some_and(|d| d.rev.as_deref() == Some(rev) && d.last_modified.is_some());
+                .is_some_and(|d| d.rev.as_ref() == Some(rev) && d.last_modified.is_some());
             if !dated {
                 match self.with_cache(|cache| cache.revision_time(&host.flake, rev)) {
                     Some(at) => {
                         deployed = Some(DeployedRev {
                             flake: host.flake.clone(),
-                            rev: Some(rev.to_owned()),
+                            rev: Some(rev.clone()),
                             last_modified: Some(at),
                         });
                     }
-                    None if nix::is_commit_hash(rev) && !self.undatable(&host.flake, rev) => {
-                        run.undated(&host.flake, rev);
-                    }
-                    None => {}
+                    None => date = !self.undatable(&host.flake, rev),
                 }
             }
         }
+        let recorded = recorded.filter(|_| run.looks_up());
         run.send(Event::ProbeFinished {
             id,
             result,
             deployed,
+            looking_up: recorded.is_some(),
         });
+        // After `ProbeFinished`, so that the host is there for the answer.
+        if let Some(rev) = recorded {
+            run.look_up(&host.flake, &rev, date);
+        }
     }
 
-    /// Which branches the revisions in [`Run::recorded`] head: `git
-    /// ls-remote --heads` of each flake's repository
-    /// ([`FlakeInfo::git_remote`]) that has such a revision other than the
-    /// compared one, within [`DATING_TIMEOUT`] (and never asking for
-    /// credentials); sent as `RevisionBranches`. Never under
-    /// [`Freshness::Offline`] or for a stale resolution. Without git, or
-    /// when it fails, revisions just have no branch.
-    async fn find_branches(&self, run: &Run<'_>) {
-        if self.freshness == Freshness::Offline {
-            return;
-        }
-        let recorded = run
-            .recorded
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let resolved = run
-            .resolved
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let mut by_flake: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (flake, rev) in recorded {
-            let Some(info) = resolved.get(&flake) else {
-                continue;
-            };
-            if info.stale.is_none() && info.rev.as_deref() != Some(rev.as_str()) {
-                by_flake.entry(flake).or_default().push(rev);
+    /// Look up the revisions [`Self::probe_finished`] asks for, as they
+    /// come and once their flake is resolved — not for a stale resolution
+    /// (the network just failed), nor at the compared revision itself:
+    /// - when each was committed, unless the cache knows (or a lookup failed
+    ///   lately: [`Self::undatable`]): [`nix::NixConfig::commit_time`] of
+    ///   the flake's repository at that commit ([`FlakeInfo::at_rev`]),
+    ///   [`DATING_JOBS`] at a time, each within [`DATING_TIMEOUT`]; recorded
+    ///   in the cache, failures too;
+    /// - the branches it heads: `git ls-remote --heads` of the flake's
+    ///   repository ([`FlakeInfo::git_remote`]), once per flake, within
+    ///   [`DATING_TIMEOUT`] and never asking for credentials (without git,
+    ///   or when it fails, there are none).
+    ///
+    /// Each revision then gets its `RevisionLookedUp`, whatever was found.
+    async fn look_up_revisions(&self, run: &Run<'_>, mut requests: UnboundedReceiver<Lookup>) {
+        let turns = (Semaphore::new(DATING_JOBS), Semaphore::new(DATING_JOBS));
+        let heads = Mutex::new(HashMap::new());
+        let mut lookups = FuturesUnordered::new();
+        loop {
+            tokio::select! {
+                request = requests.recv() => match request {
+                    Some(lookup) => lookups.push(self.look_up(run, &turns, &heads, lookup)),
+                    None => break,
+                },
+                Some(()) = lookups.next(), if !lookups.is_empty() => {}
             }
         }
-        let lookups = by_flake.into_iter().filter_map(|(flake, revs)| {
-            let remote = resolved.get(&flake)?.git_remote()?;
-            Some(async move {
+        while lookups.next().await.is_some() {}
+    }
+
+    /// One revision of [`Self::look_up_revisions`]; `turns`: for dating, and
+    /// for branches.
+    async fn look_up(
+        &self,
+        run: &Run<'_>,
+        (dating, listing): &(Semaphore, Semaphore),
+        heads: &Mutex<HashMap<String, Arc<OnceCell<Option<Heads>>>>>,
+        Lookup { flake, rev, date }: Lookup,
+    ) {
+        let info = run
+            .resolution(&flake)
+            .await
+            .filter(|info| info.stale.is_none() && info.rev.as_deref() != Some(rev.as_str()));
+        let (last_modified, branches) = match &info {
+            Some(info) => {
+                let dated = async {
+                    if date {
+                        self.commit_time(&flake, info, &rev, dating).await
+                    } else {
+                        None
+                    }
+                };
+                tokio::join!(dated, self.branches(info, &rev, heads, listing))
+            }
+            None => (None, None),
+        };
+        run.looked_up(flake, rev, last_modified, branches.unwrap_or_default());
+    }
+
+    /// When `rev` of `info`'s repository was committed, recorded in the
+    /// cache (or that it couldn't be told).
+    async fn commit_time(
+        &self,
+        flake: &str,
+        info: &FlakeInfo,
+        rev: &str,
+        dating: &Semaphore,
+    ) -> Option<i64> {
+        let url = info.at_rev(rev)?;
+        let _turn = dating.acquire().await.ok()?;
+        let timeout = self
+            .inner
+            .config
+            .eval_timeout
+            .non_zero()
+            .map_or(DATING_TIMEOUT, |t| t.min(DATING_TIMEOUT));
+        let spec = self.inner.config.nix.commit_time(&url);
+        let at = match self.run(spec, Some(timeout)).await {
+            Ok(out) if out.success() => out.stdout.trim().parse::<i64>().ok(),
+            _ => None,
+        };
+        match at {
+            Some(at) => self.with_cache(|cache| cache.record_revision(flake, rev, at)),
+            None => self.with_cache(|cache| cache.record_undatable(flake, rev, util::now_unix())),
+        }
+        at
+    }
+
+    /// The branches `rev` heads in `info`'s repository, which is listed once
+    /// (per check) however many revisions ask.
+    async fn branches(
+        &self,
+        info: &FlakeInfo,
+        rev: &str,
+        heads: &Mutex<HashMap<String, Arc<OnceCell<Option<Heads>>>>>,
+        listing: &Semaphore,
+    ) -> Option<Vec<String>> {
+        let remote = info.git_remote()?;
+        let listed = Arc::clone(
+            heads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(info.flake.clone())
+                .or_default(),
+        );
+        let listed = listed
+            .get_or_init(|| async {
+                let _turn = listing.acquire().await.ok()?;
                 let spec = CommandSpec::new("git")
                     .args(["ls-remote", "--heads", "--", remote.as_str()])
                     .env("GIT_TERMINAL_PROMPT", "0")
                     .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
                 let out = self.run(spec, Some(DATING_TIMEOUT)).await.ok()?;
-                out.success()
-                    .then(|| (flake, revs, parse_heads(&out.stdout)))
+                out.success().then(|| parse_heads(&out.stdout))
             })
-        });
-        let mut lookups = futures_util::stream::iter(lookups).buffer_unordered(DATING_JOBS);
-        let finding = async {
-            while let Some(found) = lookups.next().await {
-                let Some((flake, revs, mut heads)) = found else {
-                    continue;
-                };
-                for rev in revs {
-                    if let Some(branches) = heads.remove(&rev) {
-                        run.send(Event::RevisionBranches {
-                            flake: flake.clone(),
-                            rev,
-                            branches,
-                        });
-                    }
-                }
-            }
-        };
-        let _ = tokio::time::timeout(DATING_BUDGET, finding).await;
+            .await;
+        listed.as_ref()?.get(rev).cloned()
     }
 
     /// A lookup of when `rev` was committed failed lately (only `--refresh`
@@ -1006,67 +1092,6 @@ impl Engine {
     fn undatable(&self, flake: &str, rev: &str) -> bool {
         self.freshness != Freshness::Force
             && self.with_cache(|cache| cache.undatable(flake, rev, util::now_unix()))
-    }
-
-    /// When the revisions in [`Run::undated`] were committed:
-    /// [`nix::NixConfig::commit_time`] of each one's repository at that
-    /// commit ([`FlakeInfo::at_rev`]), [`DATING_JOBS`] at a time, each
-    /// within [`DATING_TIMEOUT`] and all within [`DATING_BUDGET`]; recorded
-    /// in the cache (failures too: [`Self::undatable`]) and sent as
-    /// `RevisionDated`. Never under [`Freshness::Offline`] (it may fetch),
-    /// nor for a flake whose resolution is stale (the network just failed).
-    /// A failed lookup only leaves the revision undated.
-    async fn date_revisions(&self, run: &Run<'_>) {
-        if self.freshness == Freshness::Offline {
-            return;
-        }
-        let undated =
-            std::mem::take(&mut *run.undated.lock().unwrap_or_else(PoisonError::into_inner));
-        let resolved = run
-            .resolved
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let timeout = self
-            .inner
-            .config
-            .eval_timeout
-            .non_zero()
-            .map_or(DATING_TIMEOUT, |t| t.min(DATING_TIMEOUT));
-        let lookups = undated.into_iter().filter_map(|(flake, rev)| {
-            let info = resolved.get(&flake)?;
-            // The compared revision dates itself.
-            if info.stale.is_some() || info.rev.as_deref() == Some(rev.as_str()) {
-                return None;
-            }
-            let url = info.at_rev(&rev)?;
-            Some(async move {
-                let spec = self.inner.config.nix.commit_time(&url);
-                let at = match self.run(spec, Some(timeout)).await {
-                    Ok(out) if out.success() => out.stdout.trim().parse::<i64>().ok(),
-                    _ => None,
-                };
-                (flake, rev, at)
-            })
-        });
-        let mut lookups = futures_util::stream::iter(lookups).buffer_unordered(DATING_JOBS);
-        let dating = async {
-            while let Some((flake, rev, at)) = lookups.next().await {
-                let now = util::now_unix();
-                let Some(last_modified) = at else {
-                    self.with_cache(|cache| cache.record_undatable(&flake, &rev, now));
-                    continue;
-                };
-                self.with_cache(|cache| cache.record_revision(&flake, &rev, last_modified));
-                run.send(Event::RevisionDated {
-                    flake,
-                    rev,
-                    last_modified,
-                });
-            }
-        };
-        // What isn't dated by then is tried again next time.
-        let _ = tokio::time::timeout(DATING_BUDGET, dating).await;
     }
 
     /// [`remote::ssh_hint`] for a run on `target`: none for this machine,
@@ -1452,20 +1477,41 @@ pub struct Prepared {
 }
 
 /// One check's (or other operation's) reporting: events, and whether nix /
-/// ssh failing to spawn was already reported.
+/// ssh failing to spawn was already reported; for a check, its revision
+/// lookups too.
 struct Run<'a> {
     tx: &'a EventTx,
     nix_reported: AtomicBool,
     ssh_reported: AtomicBool,
-    /// `(flake, rev)`: revisions hosts' generations record that the cache
-    /// can't date ([`Engine::date_revisions`]).
-    undated: Mutex<Vec<(String, String)>>,
-    /// `(flake, rev)`: every revision hosts' generations record
-    /// ([`Engine::find_branches`]).
-    recorded: Mutex<Vec<(String, String)>>,
-    /// The resolutions this check compares against, by flake as configured.
-    resolved: Mutex<HashMap<String, FlakeInfo>>,
+    /// Where revisions to look up go ([`Engine::look_up_revisions`]):
+    /// `None` when there are none (not a check, `--offline`), and once the
+    /// probes are done.
+    lookups: Mutex<Option<UnboundedSender<Lookup>>>,
+    /// Each revision asked for, and what was found once it was.
+    looked_up: Mutex<HashMap<(String, String), Option<LookedUp>>>,
+    /// The resolutions this check compares against, by flake as configured
+    /// (`None`: it failed).
+    resolved: Mutex<HashMap<String, Option<FlakeInfo>>>,
+    /// Every resolution is in `resolved`.
+    all_resolved: AtomicBool,
+    /// Notified when `resolved` or `all_resolved` change.
+    resolving: Notify,
 }
+
+/// A revision to look up: of the repository of `flake` (as configured),
+/// and whether to date it.
+#[derive(Debug)]
+struct Lookup {
+    flake: String,
+    rev: String,
+    date: bool,
+}
+
+/// When a revision was committed, and the branches it heads.
+type LookedUp = (Option<i64>, Vec<String>);
+
+/// Each commit of a repository and the branches it heads.
+type Heads = HashMap<String, Vec<String>>;
 
 impl<'a> Run<'a> {
     fn new(tx: &'a EventTx) -> Self {
@@ -1473,25 +1519,121 @@ impl<'a> Run<'a> {
             tx,
             nix_reported: AtomicBool::new(false),
             ssh_reported: AtomicBool::new(false),
-            undated: Mutex::new(Vec::new()),
-            recorded: Mutex::new(Vec::new()),
+            lookups: Mutex::new(None),
+            looked_up: Mutex::new(HashMap::new()),
             resolved: Mutex::new(HashMap::new()),
+            all_resolved: AtomicBool::new(false),
+            resolving: Notify::new(),
         }
     }
 
-    fn undated(&self, flake: &str, rev: &str) {
-        push_new(&self.undated, flake, rev);
-    }
-
-    fn recorded(&self, flake: &str, rev: &str) {
-        push_new(&self.recorded, flake, rev);
-    }
-
     fn resolved(&self, info: &FlakeInfo) {
+        self.resolution_of(&info.flake, Some(info.clone()));
+    }
+
+    fn unresolved(&self, flake: &str) {
+        self.resolution_of(flake, None);
+    }
+
+    fn resolution_of(&self, flake: &str, info: Option<FlakeInfo>) {
         self.resolved
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(info.flake.clone(), info.clone());
+            .insert(flake.to_owned(), info);
+        self.resolving.notify_waiters();
+    }
+
+    /// The probes and resolutions are done: no more lookups are asked for,
+    /// and a flake that isn't resolved won't be.
+    fn checked(&self) {
+        self.lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        self.all_resolved.store(true, Ordering::Release);
+        self.resolving.notify_waiters();
+    }
+
+    /// `flake`'s resolution, once it is known; `None` if it failed.
+    async fn resolution(&self, flake: &str) -> Option<FlakeInfo> {
+        loop {
+            // Before looking, so that no change is missed.
+            let changed = self.resolving.notified();
+            if let Some(info) = self
+                .resolved
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(flake)
+            {
+                return info.clone();
+            }
+            if self.all_resolved.load(Ordering::Acquire) {
+                return None;
+            }
+            changed.await;
+        }
+    }
+
+    /// Revisions can be looked up ([`Self::look_up`]).
+    fn looks_up(&self) -> bool {
+        self.lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Look up `rev` of `flake` (and date it, if `date`), unless that is
+    /// on its way; if it was done already, send what was found again (for
+    /// the host that just asked).
+    fn look_up(&self, flake: &str, rev: &str, date: bool) {
+        let key = (flake.to_owned(), rev.to_owned());
+        let mut looked_up = self
+            .looked_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match looked_up.get(&key) {
+            Some(Some((last_modified, branches))) => self.send(Event::RevisionLookedUp {
+                flake: key.0,
+                rev: key.1,
+                last_modified: *last_modified,
+                branches: branches.clone(),
+            }),
+            Some(None) => {}
+            None => {
+                looked_up.insert(key, None);
+                if let Some(lookups) = &*self.lookups.lock().unwrap_or_else(PoisonError::into_inner)
+                {
+                    let _ = lookups.send(Lookup {
+                        flake: flake.to_owned(),
+                        rev: rev.to_owned(),
+                        date,
+                    });
+                }
+            }
+        }
+    }
+
+    /// What was found about `rev` of `flake`: remembered, and sent.
+    fn looked_up(
+        &self,
+        flake: String,
+        rev: String,
+        last_modified: Option<i64>,
+        branches: Vec<String>,
+    ) {
+        self.looked_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                (flake.clone(), rev.clone()),
+                Some((last_modified, branches.clone())),
+            );
+        self.send(Event::RevisionLookedUp {
+            flake,
+            rev,
+            last_modified,
+            branches,
+        });
     }
 
     /// Nobody listening is fine: the front-end is gone.
@@ -1505,13 +1647,6 @@ impl<'a> Run<'a> {
         if !reported.swap(true, Ordering::Relaxed) {
             self.send(Event::Unrunnable(ErrorInfo::msg(message)));
         }
-    }
-}
-
-fn push_new(pairs: &Mutex<Vec<(String, String)>>, flake: &str, rev: &str) {
-    let mut pairs = pairs.lock().unwrap_or_else(PoisonError::into_inner);
-    if !pairs.iter().any(|(f, r)| f == flake && r == rev) {
-        pairs.push((flake.to_owned(), rev.to_owned()));
     }
 }
 
@@ -2447,11 +2582,15 @@ error:
                 id,
                 result: Ok(report),
                 deployed,
+                looking_up,
             } => {
                 let current = report.current.as_ref().map_or("none", StorePath::name);
                 let mut line = format!("probe- {id} {current}");
                 if let Some(DeployedRev { rev: Some(rev), .. }) = deployed {
                     let _ = write!(line, " (deployed {})", &rev[..7]);
+                }
+                if *looking_up {
+                    line.push_str(" (looking up)");
                 }
                 line
             }
@@ -2460,16 +2599,17 @@ error:
             } => {
                 format!("probe- {id} {:?}: {}", e.kind, e.error.summary)
             }
-            Event::RevisionDated {
+            Event::RevisionLookedUp {
                 flake,
                 rev,
                 last_modified,
-            } => format!("dated {flake}@{} {last_modified}", &rev[..7]),
-            Event::RevisionBranches {
-                flake,
-                rev,
                 branches,
-            } => format!("branches {flake}@{} {}", &rev[..7], branches.join(",")),
+            } => format!(
+                "looked-up {flake}@{} {} [{}]",
+                &rev[..7],
+                last_modified.map_or("undated".into(), |at| at.to_string()),
+                branches.join(",")
+            ),
             Event::EvalStarted(id) => format!("eval+ {id}"),
             Event::EvalFinished {
                 id,
@@ -3543,7 +3683,7 @@ error:
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_revision_a_host_runs_is_dated_once_after_the_check() {
+    async fn the_revision_a_host_runs_is_looked_up_once_its_flake_is_resolved() {
         let fake = world();
         fake.on(
             "probe web1",
@@ -3567,14 +3707,17 @@ error:
         let hosts = ids(vec![remote("web1")]);
         let engine = engine(&config(), Cache::in_memory(), &fake);
         let seen = lines(&check(&engine, &hosts, &[]).await);
-        // After the probe and the evaluation, not in their way.
+        // Beside the evaluation, once the flake is resolved; the host is
+        // looking up from its probe until then.
         assert_eq!(
-            &seen[seen.len() - 4..],
+            &seen[3..],
             [
+                "10 probe- 0 branch (looking up)",
+                "300 flake- github:o/r 42ea902",
+                "300 eval+ 0",
+                "350 looked-up github:o/r@1a2b3c4 1792300000 [also,feat/x]",
                 "400 eval- 0 main",
-                "420 branches github:o/r@1a2b3c4 also,feat/x",
-                "450 dated github:o/r@1a2b3c4 1792300000",
-                "450 run-"
+                "400 run-"
             ],
             "{seen:#?}"
         );
@@ -3600,13 +3743,19 @@ error:
             ),
             "only the tree is fetched, the flake isn't read"
         );
-        // Now the cache knows: the next probe comes with the time.
+        // Now the cache knows: the next probe comes with the time, and only
+        // the branches are looked up again.
         let seen = check(&engine, &hosts, &[]).await;
-        assert!(!lines(&seen).iter().any(|line| line.contains("dated")));
+        assert!(
+            lines(&seen).contains(&"30 looked-up github:o/r@1a2b3c4 undated [also,feat/x]".into()),
+            "{:#?}",
+            lines(&seen)
+        );
         assert_eq!(
             fake.calls_to(&format!("commit-time {GITHUB}/{REV2}")).len(),
             1
         );
+        assert_eq!(fake.calls_to("heads https://github.com/o/r").len(), 2);
         let deployed = seen.iter().find_map(|(_, event)| match event {
             Event::ProbeFinished { deployed, .. } => deployed.clone(),
             _ => None,
@@ -3619,6 +3768,28 @@ error:
                 last_modified: Some(1792300000),
             })
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_does_not_wait_for_other_hosts() {
+        let fake = world();
+        fake.on("probe web1", running_rev(&sp('b', "branch"), REV2))
+            .on("probe web2", running(&sp('c', "main")).after(5_000))
+            .on(
+                &format!("commit-time {GITHUB}/{REV2}"),
+                Reply::ok("1792300000").after(50),
+            );
+        for name in ["web1", "web2"] {
+            fake.on(
+                &format!("eval-ro {}", attr(name)),
+                evaluates(&sp('c', "main")),
+            );
+        }
+        let hosts = ids(vec![remote("web1"), remote("web2")]);
+        let engine = engine(&config(), Cache::in_memory(), &fake);
+        let seen = lines(&check(&engine, &hosts, &[]).await);
+        let at = |what: &str| seen.iter().position(|l| l.contains(what)).unwrap();
+        assert!(at(" looked-up ") < at(" probe- 1 "), "{seen:#?}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -3646,7 +3817,11 @@ error:
         let hosts = ids(cases.iter().map(|(name, _)| remote(name)).collect());
         let engine = engine(&config(), Cache::in_memory(), &fake);
         let seen = lines(&check(&engine, &hosts, &[]).await);
-        assert!(!seen.iter().any(|line| line.contains("dated")), "{seen:#?}");
+        let dated = |seen: &[String]| {
+            seen.iter()
+                .any(|line| line.contains(" looked-up ") && !line.contains(" undated "))
+        };
+        assert!(!dated(&seen), "{seen:#?}");
         assert_eq!(seen.last().map(String::as_str), Some("300 run-"));
         let lookups = || {
             let mut keys: Vec<String> = fake
@@ -3704,7 +3879,7 @@ error:
             .collect();
         assert_eq!(starts, [300, 300, 300, 300, 20_300, 20_300], "{seen:#?}");
         assert!(
-            seen.contains(&"20310 dated github:o/r@5555555 1792300000".to_string()),
+            seen.contains(&"20310 looked-up github:o/r@5555555 1792300000 []".to_string()),
             "{seen:#?}"
         );
         assert_eq!(seen.last().map(String::as_str), Some("30300 run-"));
@@ -3729,7 +3904,10 @@ error:
         cache.record_out_path(&key_of(&info), &info, &attr("web1"), &sp('c', "main"), 1);
         let engine = Engine::assemble(&config(), cache, Freshness::Offline, fake.runner(), None);
         let seen = lines(&check(&engine, &ids(vec![remote("web1")]), &[]).await);
-        assert!(!seen.iter().any(|line| line.contains("dated")), "{seen:#?}");
+        assert!(
+            !seen.iter().any(|line| line.contains("looking up")),
+            "{seen:#?}"
+        );
         let mut keys = fake.keys();
         keys.sort();
         assert_eq!(keys, ["probe web1", "version"]);

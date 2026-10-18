@@ -54,17 +54,21 @@ kernel/initrd/modules differ), `specialisation <name>`.
 **Ahead** (`on <rev> (<age> newer)`): the generation itself records a revision
 committed after the compared one (commit times, not history; a revision the
 cache merely matched by path never counts). It needs that commit's time: when
-neither an earlier evaluation nor an earlier lookup has it, the check ends by
-fetching that commit of the flake's repository — `builtins.fetchTree` of the
-locked URL with the commit swapped in, so nothing of it is evaluated (no
-`flake.nix`, no inputs) — for git-based flakes, ≤ 4 at once, 20 s each, 30 s in
-all, never `--offline` or on a stale resolution; a failure is retried after an
-hour or on `--refresh`. Ahead hosts exit 1 (they don't run the compared
+neither an earlier evaluation nor an earlier lookup has it, hostctl fetches
+that commit of the flake's repository as soon as the host's probe and the
+flake's resolution are in, beside the rest of the check — `builtins.fetchTree`
+of the locked URL with the commit swapped in, so nothing of it is evaluated (no
+`flake.nix`, no inputs) — for git-based flakes, ≤ 4 at once, 20 s each, at most
+30 s after the probes and evaluations, never `--offline` or on a stale
+resolution; a failure is retried after an hour or on `--refresh`. Ahead hosts exit 1 (they don't run the compared
 configuration either) but aren't suggested for `update:`, `activate` skips them
 without `--force`, and activating one warns that it goes back. Alongside the
 dating, `git ls-remote --heads` of the flake's repository (forge web URL or a
-`git` flake's `locked.url`; `GIT_TERMINAL_PROMPT=0`, ssh in BatchMode) names the
-branches a recorded revision heads: `on feat/x (878d66c, 8h newer)`.
+`git` flake's `locked.url`; `GIT_TERMINAL_PROMPT=0`, ssh in BatchMode; once per
+flake and check) names the branches a recorded revision heads: `on feat/x
+(878d66c, 8h newer)`. Until both lookups of its revision are done, an outdated
+host is pending (`looking up its commit`), so its row is drawn once, not as
+outdated and then as ahead, or without its branch and then with it.
 
 Exit codes: `0` all up to date (offline optional hosts allowed), `1` some
 outdated / not activated / ahead, `2` trouble (unreachable, failed, pending, stale flake,

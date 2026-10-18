@@ -994,6 +994,7 @@ mod tests {
                     id,
                     result: Ok(report(if id % 2 == 0 { 'a' } else { 'b' })),
                     deployed: None,
+                    looking_up: false,
                 },
             ));
         }
@@ -1420,6 +1421,7 @@ mod tests {
                 id: 0,
                 result: Ok(report('a')),
                 deployed: None,
+                looking_up: false,
             },
             now,
         );
@@ -1431,6 +1433,7 @@ mod tests {
                     error: ErrorInfo::msg("ssh: connect to host web1: Connection refused"),
                 }),
                 deployed: None,
+                looking_up: false,
             },
             now,
         );
@@ -1441,6 +1444,7 @@ mod tests {
                 id: 3,
                 result: Ok(report('a')),
                 deployed: None,
+                looking_up: false,
             },
             now,
         );
@@ -1925,6 +1929,7 @@ mod tests {
             id: 0,
             result: Ok(report('a')),
             deployed: None,
+            looking_up: false,
         });
         // The interrupt is ready at once, before any event is read.
         let ended = drive_to_end(

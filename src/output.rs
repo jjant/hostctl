@@ -1340,6 +1340,7 @@ mod tests {
                     id,
                     result,
                     deployed,
+                    looking_up: false,
                 },
             );
         }

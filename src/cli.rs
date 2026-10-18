@@ -2502,6 +2502,7 @@ mod tests {
                 id,
                 result,
                 deployed: None,
+                looking_up: false,
             },
             Instant::now(),
         );

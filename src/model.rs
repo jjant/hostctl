@@ -269,8 +269,12 @@ pub struct HostState {
     /// Which cached revision the current generation belongs to, if any.
     pub deployed: Option<DeployedRev>,
     /// The branches the revision its generation records heads, and that
-    /// revision ([`Event::RevisionBranches`]).
+    /// revision ([`Event::RevisionLookedUp`]).
     pub branches: Option<(String, Vec<String>)>,
+    /// That revision is being looked up ([`Event::ProbeFinished`]'s
+    /// `looking_up`): until the lookup is done, an outdated host is pending
+    /// rather than shown one way and then another.
+    pub looking_up: bool,
 }
 
 impl HostState {
@@ -283,6 +287,7 @@ impl HostState {
             diff_inputs: None,
             deployed: None,
             branches: None,
+            looking_up: false,
         }
     }
 
@@ -301,10 +306,12 @@ impl HostState {
 
     /// Derived from the latest values (stale ones count while a refresh
     /// runs). An eval failure wins over probe failures, which win over the
-    /// comparison. An outdated host whose generation records a revision
-    /// committed after the compared one is [`Status::Ahead`].
+    /// comparison. An outdated host is pending while its revision is
+    /// [looked up](Self::looking_up), and [`Status::Ahead`] when its
+    /// generation records a revision committed after the compared one.
     pub fn status(&self) -> Status {
         match self.compared() {
+            Status::Outdated if self.looking_up => Status::Pending,
             Status::Outdated if self.drift().is_some_and(|d| d.is_newer()) => Status::Ahead,
             status => status,
         }
@@ -422,6 +429,8 @@ impl HostState {
             Some("evaluating")
         } else if self.probe.is_running() {
             Some("probing")
+        } else if self.looking_up && self.status() == Status::Pending {
+            Some("looking up its commit")
         } else if self.status() == Status::Pending {
             Some("waiting")
         } else {
@@ -458,19 +467,17 @@ pub enum Event {
         /// Reverse cache lookup of the probed generation (or, when the
         /// generation records its revision, the cache's time for it).
         deployed: Option<DeployedRev>,
+        /// The revision the generation records is being looked up: a
+        /// [`Event::RevisionLookedUp`] for it follows (or the check ends).
+        looking_up: bool,
     },
-    /// When a revision some hosts of `flake` run was committed (looked up
-    /// after their probes).
-    RevisionDated {
+    /// What was found about a revision some hosts of `flake` run: when it
+    /// was committed and the branches of the flake's repository it heads,
+    /// as far as known.
+    RevisionLookedUp {
         flake: String,
         rev: String,
-        last_modified: i64,
-    },
-    /// The branches of `flake`'s repository a revision some hosts run is
-    /// the head of.
-    RevisionBranches {
-        flake: String,
-        rev: String,
+        last_modified: Option<i64>,
         branches: Vec<String>,
     },
     EvalStarted(HostId),
@@ -604,6 +611,7 @@ impl AppState {
                 id,
                 result,
                 deployed,
+                looking_up,
             } => {
                 if let Some(h) = self.hosts.get_mut(id) {
                     let old = h.current().cloned();
@@ -612,36 +620,30 @@ impl AppState {
                         h.diff.clear_value();
                     }
                     h.deployed = deployed;
+                    h.looking_up = looking_up;
                 }
             }
-            Event::RevisionDated {
+            Event::RevisionLookedUp {
                 flake,
                 rev,
                 last_modified,
-            } => {
-                for h in &mut self.hosts {
-                    let runs_it = h.host.flake == flake
-                        && h.report().and_then(|r| r.revision.as_deref()) == Some(rev.as_str());
-                    if runs_it {
-                        h.deployed = Some(DeployedRev {
-                            flake: flake.clone(),
-                            rev: Some(rev.clone()),
-                            last_modified: Some(last_modified),
-                        });
-                    }
-                }
-            }
-            Event::RevisionBranches {
-                flake,
-                rev,
                 branches,
             } => {
                 for h in &mut self.hosts {
                     let runs_it = h.host.flake == flake
                         && h.report().and_then(|r| r.revision.as_deref()) == Some(rev.as_str());
-                    if runs_it {
-                        h.branches = Some((rev.clone(), branches.clone()));
+                    if !runs_it {
+                        continue;
                     }
+                    if let Some(at) = last_modified {
+                        h.deployed = Some(DeployedRev {
+                            flake: flake.clone(),
+                            rev: Some(rev.clone()),
+                            last_modified: Some(at),
+                        });
+                    }
+                    h.branches = Some((rev.clone(), branches.clone()));
+                    h.looking_up = false;
                 }
             }
             Event::EvalStarted(id) => {
@@ -717,8 +719,20 @@ impl AppState {
                     f.info.stop();
                 }
                 self.run.stop();
+                self.lookups_ended();
             }
-            Event::RunFinished => self.run.finish((), now),
+            Event::RunFinished => {
+                self.run.finish((), now);
+                self.lookups_ended();
+            }
+        }
+    }
+
+    /// A check ended: lookups it didn't finish won't be (their hosts show
+    /// what is known).
+    fn lookups_ended(&mut self) {
+        for h in &mut self.hosts {
+            h.looking_up = false;
         }
     }
 
@@ -840,6 +854,7 @@ mod tests {
                 id,
                 result,
                 deployed: None,
+                looking_up: false,
             },
             now + Duration::from_millis(5),
         );
@@ -963,6 +978,7 @@ mod tests {
                     rev: Some("rev-cached".into()),
                     last_modified: Some(7),
                 }),
+                looking_up: false,
             },
             Instant::now(),
         );
@@ -1005,10 +1021,11 @@ mod tests {
         }
         let dated = |s: &mut AppState, rev: &str, at| {
             s.apply(
-                Event::RevisionDated {
+                Event::RevisionLookedUp {
                     flake: "f".into(),
                     rev: rev.into(),
-                    last_modified: at,
+                    last_modified: Some(at),
+                    branches: vec![],
                 },
                 Instant::now(),
             );
@@ -1033,14 +1050,17 @@ mod tests {
         // Only the hosts of that flake running that revision.
         assert_eq!(revision(&s, 1), (None, None));
         assert_eq!(revision(&s, 2), (None, None));
+        // An answer without a time keeps the one known.
         s.apply(
-            Event::RevisionBranches {
+            Event::RevisionLookedUp {
                 flake: "f".into(),
                 rev: "rev-x".into(),
+                last_modified: None,
                 branches: vec!["feat/x".into()],
             },
             Instant::now(),
         );
+        assert_eq!(revision(&s, 0), (Some(1600), Some(600)));
         assert!(
             matches!(&s.hosts[0].drift(), Some(Drift::Revision { branches, .. }) if branches == &["feat/x"]),
             "{:?}",
@@ -1071,11 +1091,58 @@ mod tests {
                     rev: Some("rev-x".into()),
                     last_modified: Some(1600),
                 }),
+                looking_up: false,
             },
             Instant::now(),
         );
         assert_eq!(revision(&s, 0), (None, None));
         assert_eq!(s.hosts[0].status(), Status::Outdated);
+    }
+
+    #[test]
+    fn an_outdated_host_is_pending_while_its_revision_is_looked_up() {
+        let mut s = AppState::new(vec![host("a", "f"), host("b", "f")]);
+        let now = Instant::now();
+        s.apply(Event::RunStarted, now);
+        for id in 0..2 {
+            evaluated(&mut s, id, Ok(desired(['z', 'a'][id])));
+            s.apply(
+                Event::ProbeFinished {
+                    id,
+                    result: Ok(ProbeReport {
+                        revision: Some("rev-x".into()),
+                        ..report('a')
+                    }),
+                    deployed: None,
+                    looking_up: true,
+                },
+                now,
+            );
+        }
+        assert_eq!(s.hosts[0].status(), Status::Pending);
+        assert_eq!(s.hosts[0].activity(), Some("looking up its commit"));
+        // Whatever the lookup says, an up-to-date host is.
+        assert_eq!(s.hosts[1].status(), Status::UpToDate);
+        s.apply(
+            Event::RevisionLookedUp {
+                flake: "f".into(),
+                rev: "rev-x".into(),
+                last_modified: None,
+                branches: vec!["feat/x".into()],
+            },
+            now,
+        );
+        assert_eq!(s.hosts[0].status(), Status::Outdated);
+        assert!(
+            matches!(&s.hosts[0].drift(), Some(Drift::Revision { branches, .. }) if branches == &["feat/x"])
+        );
+
+        // A check that ends (or is interrupted) first leaves it as known.
+        for end in [Event::RunFinished, Event::Interrupted] {
+            s.hosts[0].looking_up = true;
+            s.apply(end, now);
+            assert_eq!(s.hosts[0].status(), Status::Outdated);
+        }
     }
 
     #[test]
