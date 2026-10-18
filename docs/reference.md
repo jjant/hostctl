@@ -113,26 +113,31 @@ remote hosts, so pasting it into any shell does the right thing.
 
 From most to least urgent (the order `s` sorts by):
 
-| status          | icon | meaning                                        | exit |
-| --------------- | ---- | ---------------------------------------------- | ---- |
-| `eval-failed`   | `!`  | the configuration doesn't evaluate             | 2    |
-| `probe-failed`  | `!`  | the host answered, but the answer was unusable | 2    |
-| `unreachable`   | `?`  | ssh failed or timed out before an answer       | 2    |
-| `outdated`      | `✗`  | the active generation isn't the desired one    | 1    |
-| `not-activated` | `○`  | reachable, but there is no generation at all   | 1    |
-| `pending`       | `…`  | still being checked                            | 2    |
-| `offline`       | `–`  | unreachable, but the host is `optional`        | 0    |
-| `up-to-date`    | `✓`  | the active generation is the desired one       | 0    |
+| status          | icon | meaning                                                                                     | exit |
+| --------------- | ---- | ------------------------------------------------------------------------------------------- | ---- |
+| `eval-failed`   | `!`  | the configuration doesn't evaluate                                                          | 2    |
+| `probe-failed`  | `!`  | the host answered, but the answer was unusable                                              | 2    |
+| `unreachable`   | `?`  | ssh failed or timed out before an answer                                                    | 2    |
+| `outdated`      | `✗`  | the active generation isn't the desired one                                                 | 1    |
+| `not-activated` | `○`  | reachable, but there is no generation at all                                                | 1    |
+| `pending`       | `…`  | still being checked                                                                         | 2    |
+| `offline`       | `–`  | unreachable, but the host is `optional`                                                     | 0    |
+| `ahead`         | `↑`  | not the desired generation, but its generation records a commit made after the compared one | 1    |
+| `up-to-date`    | `✓`  | the active generation is the desired one                                                    | 0    |
+
+**Ahead** is for a branch being tried out: the host runs a commit made after
+the compared one (by commit time, not history: once the compared branch gets a
+later commit, the host is outdated again), as its generation records it. It
+isn't in the `update:` suggestion, `hostctl activate` skips it unless
+`--force`, and activating it warns that it goes back. To date a recorded
+revision it hasn't evaluated, hostctl fetches that commit of the flake's
+repository after the check (github, gitlab, sourcehut or git flakes; once per
+commit, again an hour after a failure or on `--refresh`, never `--offline`).
 
 **Drift** says why an outdated host differs: `on <rev> (<age> old)` (the
 revision it runs, recorded by the generation itself as `configurationRevision`
-or remembered by hostctl from an earlier check), `on <rev> (<age> newer)` (a
-commit later than the compared one, such as a branch being tried out:
-activating would go back, so the `update:` suggestion leaves the host out; to
-date a recorded revision hostctl fetches that commit of the flake's repository
-after the check: github, gitlab, sourcehut or git flakes; once per commit, again
-an hour after a failure or on `--refresh`, never `--offline`), `same rev,
-different build`
+or remembered by hostctl from an earlier check), `on <rev> (<age> newer)` for
+an ahead host, `same rev, different build`
 (activated from a reference without `rev`, or with overridden inputs), `staged`
 (the profile already points at the desired generation; a switch or reboot is
 pending) or `unknown generation` (not built from a revision hostctl has
@@ -141,7 +146,7 @@ NixOS host booted another kernel, initrd or modules than it runs) and
 `specialisation <name>`.
 
 **Exit codes**: `0` everything is up to date (offline optional hosts allowed);
-`1` some host is outdated or not activated; `2` trouble: a host is unreachable,
+`1` some host is outdated, not activated or ahead; `2` trouble: a host is unreachable,
 failed or still pending, a flake couldn't be refreshed, or another error — trouble
 wins over outdated; `3` the check couldn't run (usage or config error, no host
 selected, `nix` or `ssh` can't be run at all); `130` interrupted.
@@ -349,7 +354,7 @@ else is passed through and left to `hostctl config check`.
 ```json
 {
   "version": 1,
-  "summary": { "total": 4, "upToDate": 1, "outdated": 2, "trouble": 0, "pending": 0, "offline": 1 },
+  "summary": { "total": 4, "upToDate": 1, "outdated": 2, "ahead": 0, "trouble": 0, "pending": 0, "offline": 1 },
   "flakes": [
     {
       "flake": "github:you/nix-config",
@@ -391,13 +396,15 @@ else is passed through and left to `hostctl config check`.
 }
 ```
 
-`summary.outdated` counts outdated and not-activated hosts. `local` is
+`summary.outdated` counts outdated and not-activated hosts; `summary.ahead`
+the ahead ones. `local` is
 `"local"`, `"assumed"` or `null` (remote). `drift` is `null` unless the host
 is outdated; its `type` is `revision`, `same-revision`, `staged` or `unknown`,
 and a `revision` drift also has the deployed `rev`, its `lastModified` (`null`
 unless hostctl knows it), `fromGeneration` (`true` when the generation records
 the revision itself, `false` when hostctl's cache remembered it) and `newer`
-(`true` when it was committed after the compared revision). `activate` is `null` when hostctl has no activation for the
+(`true` when the generation's own revision was committed after the compared
+one: the host is `ahead`; `false` when that isn't known). `activate` is `null` when hostctl has no activation for the
 host, else the exact `command` and where it runs, `runsOn`: `"here"` (this
 machine) or `"remote"` (on the host, over ssh). `error` is `{ "summary",
 "detail" }`. `activated` and `lastModified` are Unix seconds. `hostctl diff
@@ -566,7 +573,7 @@ slowest probe, a quarter of a second.
   fetching that commit's tree from the compared flake's repository (no
   evaluation, no inputs). A host can name any commit that repository serves
   (on GitHub, also its forks' commits), so a host that lies about its
-  revision can make itself look newer, but no more.
+  revision can make itself look ahead, but no more.
 - Everything a host or flake says (names, paths, errors) is stripped of
   terminal control sequences before it is displayed.
 - The cache (`$XDG_CACHE_HOME/hostctl/cache.json`) holds store paths and

@@ -13,6 +13,8 @@ github:jjant/nix-config @ 42ea902 (2h ago)
   nixos-gaming    ✓ up to date  gen 77 · 6h ago · specialisation gaming
   nixos-reboot    ✗ outdated    gen 120 · 5d ago · on 1a2b3c4 · ⟳ reboot
   nixos-uptodate  ✓ up to date  gen 121 · 1d ago · ⟳ reboot
+  darwin-dated    ✗ outdated    gen 40 · 3w ago · on 1a2b3c4 (3w old)
+  darwin-ahead    ↑ ahead       gen 43 · 20m ago · on 9b8a7c6 (2h newer)
 
-7 outdated · 2 up to date · 3.4s
-update: hostctl activate darwin-gen dirty-mac hm-cache hm-same hm-staged hm-unknown nixos-reboot
+8 outdated · 1 ahead · 2 up to date · 3.4s
+update: hostctl activate darwin-gen dirty-mac hm-cache hm-same hm-staged hm-unknown nixos-reboot darwin-dated

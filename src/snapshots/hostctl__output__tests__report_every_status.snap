@@ -285,13 +285,50 @@ expression: json
         "evalMs": null,
         "probeMs": 250
       }
+    },
+    {
+      "activate": {
+        "command": "/run/current-system/sw/bin/nixos-rebuild switch --flake 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#tryout --sudo",
+        "runsOn": "remote"
+      },
+      "activated": 1792248800,
+      "attr": "nixosConfigurations.tryout.config.system.build.toplevel",
+      "booted": null,
+      "cached": false,
+      "current": "/nix/store/afvwn2ldnj8z50fisjnj40xpdq7602y4-home-manager-generation",
+      "desired": "/nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation",
+      "destination": "tryout",
+      "drift": {
+        "fromGeneration": true,
+        "lastModified": 1792250811,
+        "newer": true,
+        "rev": "9b8a7c6d5e4f30211223344556677889900aabbc",
+        "type": "revision"
+      },
+      "error": null,
+      "flake": "github:jjant/nix-config",
+      "generation": 12,
+      "kind": "nixos",
+      "local": null,
+      "name": "tryout",
+      "note": null,
+      "platform": "x86_64-linux",
+      "rebootRequired": false,
+      "revision": "9b8a7c6d5e4f30211223344556677889900aabbc",
+      "specialisation": null,
+      "status": "ahead",
+      "timings": {
+        "evalMs": 3000,
+        "probeMs": 250
+      }
     }
   ],
   "summary": {
+    "ahead": 1,
     "offline": 1,
     "outdated": 2,
     "pending": 2,
-    "total": 9,
+    "total": 10,
     "trouble": 3,
     "upToDate": 1
   },

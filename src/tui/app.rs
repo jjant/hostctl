@@ -674,12 +674,13 @@ impl App {
                         h.host.name
                     )
                 });
+                let notice = up_to_date.or_else(|| h.going_back());
                 Confirm {
                     id,
                     title: format!("Activate {}?", h.host.name),
                     runs_on: runs_on_label(&h.host, activation.runs_on),
                     command: activation.command,
-                    warning: join_warnings(activation.warning, up_to_date),
+                    warning: join_warnings(activation.warning, notice),
                     after: After::Reprobe,
                     from_diff: from_diff.is_some(),
                     scroll: 0,

@@ -20,58 +20,65 @@ Evaluation only; nothing is built. Configurations that embed `self.rev` /
 when activated from a reference carrying the same values; every default
 activation template uses `{flake}` for that reason.
 
-| kind           | desired (`attr`, absolute: evaluated as `#.<attr>`)    | current (read on the host)                                     |
-| -------------- | ------------------------------------------------------ | -------------------------------------------------------------- |
-| `nixos`        | `nixosConfigurations.<n>.config.system.build.toplevel` | `/run/current-system` (specialisations map back to their parent) |
-| `darwin`       | `darwinConfigurations.<n>.system`                      | `/run/current-system`                                          |
+| kind           | desired (`attr`, absolute: evaluated as `#.<attr>`)    | current (read on the host)                                                                                              |
+| -------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `nixos`        | `nixosConfigurations.<n>.config.system.build.toplevel` | `/run/current-system` (specialisations map back to their parent)                                                        |
+| `darwin`       | `darwinConfigurations.<n>.system`                      | `/run/current-system`                                                                                                   |
 | `home-manager` | `homeConfigurations.<n>.activationPackage`             | `${XDG_STATE_HOME:-~/.local/state}/nix/profiles/home-manager`, then `/nix/var/nix/profiles/per-user/$USER/home-manager` |
-| `custom`       | required `attr`                                        | required `profile` (a symlink)                                 |
+| `custom`       | required `attr`                                        | required `profile` (a symlink)                                                                                          |
 
 Statuses (most urgent first, which is also the "sort by status" order):
 
-| status          | icon | meaning                                                         | exit |
-| --------------- | ---- | --------------------------------------------------------------- | ---- |
-| `eval-failed`   | `!`  | the configuration doesn't evaluate                              | 2    |
-| `probe-failed`  | `!`  | reachable, but the answer was unusable                          | 2    |
-| `unreachable`   | `?`  | ssh failed / timed out before answering                         | 2    |
-| `outdated`      | `✗`  | active ≠ desired                                                | 1    |
-| `not-activated` | `○`  | reachable, no generation at all                                 | 1    |
-| `pending`       | spin | still being checked                                             | 2    |
-| `offline`       | `–`  | unreachable, but the host is `optional`                         | 0    |
-| `up-to-date`    | `✓`  | active = desired                                                | 0    |
+| status          | icon | meaning                                                 | exit |
+| --------------- | ---- | ------------------------------------------------------- | ---- |
+| `eval-failed`   | `!`  | the configuration doesn't evaluate                      | 2    |
+| `probe-failed`  | `!`  | reachable, but the answer was unusable                  | 2    |
+| `unreachable`   | `?`  | ssh failed / timed out before answering                 | 2    |
+| `outdated`      | `✗`  | active ≠ desired                                        | 1    |
+| `not-activated` | `○`  | reachable, no generation at all                         | 1    |
+| `pending`       | spin | still being checked                                     | 2    |
+| `offline`       | `–`  | unreachable, but the host is `optional`                 | 0    |
+| `ahead`         | `↑`  | active ≠ desired; its generation records a later commit | 1    |
+| `up-to-date`    | `✓`  | active = desired                                        | 0    |
 
 Outdated hosts get a **drift** qualifier: `on <rev> (<age> old)` (deployed
 revision known from the generation itself — `configurationRevision` — or from
-hostctl's cache), `on <rev> (<age> newer)` (committed after the compared
-revision: left out of the `update:` suggestion; a recorded revision the cache
-can't date is looked up after the check by fetching that commit —
-`builtins.fetchTree` of the locked URL with the commit swapped in, so nothing of
-it is evaluated (no `flake.nix`, no inputs) — for git-based flakes, ≤ 4 at
-once, 20 s each, 30 s in all, never `--offline` or on a stale resolution; a
-failure is retried after an hour or on `--refresh`), `same rev, different build` (revision equal, paths differ:
+hostctl's cache), `same rev, different build` (revision equal, paths differ:
 activated from a flake reference without `rev`, or with overridden inputs),
 `staged` (the profile already points at the desired generation; switch/reboot
 pending), or `unknown generation` (not built from a revision hostctl has
 checked: a local checkout, another branch). Badges: `⟳ reboot` (NixOS booted
 kernel/initrd/modules differ), `specialisation <name>`.
 
+**Ahead** (`on <rev> (<age> newer)`): the generation itself records a revision
+committed after the compared one (commit times, not history; a revision the
+cache merely matched by path never counts). It needs that commit's time: when
+neither an earlier evaluation nor an earlier lookup has it, the check ends by
+fetching that commit of the flake's repository — `builtins.fetchTree` of the
+locked URL with the commit swapped in, so nothing of it is evaluated (no
+`flake.nix`, no inputs) — for git-based flakes, ≤ 4 at once, 20 s each, 30 s in
+all, never `--offline` or on a stale resolution; a failure is retried after an
+hour or on `--refresh`. Ahead hosts exit 1 (they don't run the compared
+configuration either) but aren't suggested for `update:`, `activate` skips them
+without `--force`, and activating one warns that it goes back.
+
 Exit codes: `0` all up to date (offline optional hosts allowed), `1` some
-outdated / not activated, `2` trouble (unreachable, failed, pending, stale flake,
+outdated / not activated / ahead, `2` trouble (unreachable, failed, pending, stale flake,
 global error) — trouble wins, `3` the check couldn't run (usage or config error,
 no host selected, nix or ssh can't be run at all), `130` interrupted.
 
 ## Measurements (bigmem, 5 hosts, nix 2.35.3; design review re-measured)
 
-| step                                                           | time / RSS          |
-| -------------------------------------------------------------- | ------------------- |
-| shell script: 2 × `nix eval --apply mapAttrs` (home + darwin)   | 11.7 s              |
-| one `nix eval --read-only` **per host**, all in parallel        | 5.0–5.4 s           |
-| single eval normal / `--read-only` (warm)                       | 3.9 s / 2.9–3.3 s   |
-| per-eval peak RSS: home-manager / darwin / minimal NixOS        | 0.6 / 0.9 / 0.64 GB |
-| 64 parallel evals, default / with `--option tarball-ttl` max    | 24.2 s / 4.6 s      |
-| `nix flake metadata --json --refresh` (warm / cold)             | 0.05–0.3 / 1.3 s    |
-| discovery + inventory (`#.` + `--apply`), warm                  | 0.07 s              |
-| ssh probe: new connection / private master / Mac via tunnel     | 0.25–0.48 s / 20 ms / 0.95→0.25 s |
+| step                                                          | time / RSS                        |
+| ------------------------------------------------------------- | --------------------------------- |
+| shell script: 2 × `nix eval --apply mapAttrs` (home + darwin) | 11.7 s                            |
+| one `nix eval --read-only` **per host**, all in parallel      | 5.0–5.4 s                         |
+| single eval normal / `--read-only` (warm)                     | 3.9 s / 2.9–3.3 s                 |
+| per-eval peak RSS: home-manager / darwin / minimal NixOS      | 0.6 / 0.9 / 0.64 GB               |
+| 64 parallel evals, default / with `--option tarball-ttl` max  | 24.2 s / 4.6 s                    |
+| `nix flake metadata --json --refresh` (warm / cold)           | 0.05–0.3 / 1.3 s                  |
+| discovery + inventory (`#.` + `--apply`), warm                | 0.07 s                            |
+| ssh probe: new connection / private master / Mac via tunnel   | 0.25–0.48 s / 20 ms / 0.95→0.25 s |
 
 Consequences:
 
@@ -122,25 +129,25 @@ Warm `hostctl status` ≈ max(metadata-or-cached ≤ 0.3 s, slowest probe ≈ 0.
 
 ### Modules
 
-| module         | responsibility                                                                 |
-| -------------- | ------------------------------------------------------------------------------ |
-| `util`         | durations, ages, sizes, glob, base64/OSC 52, truncation, terminal sanitizing   |
-| `storepath`    | store path parsing; Nix `DrvName` split + `compareVersions`                     |
-| `closure`      | closure diff (same grouping as `nix store diff-closures`)                       |
-| `config`       | TOML schema, loading, overrides, validation, resolution into `Host`s            |
-| `local`        | which hosts are this machine                                                   |
-| `probe`        | builtin POSIX-sh probe script + framed output parser                           |
-| `remote`       | `CommandSpec`, quoting, ssh argv (mux, destinations), PATH prelude             |
-| `exec`         | process runner (setsid, process-group kill, caps), interactive runner          |
-| `nix`          | nix command builders, metadata/eval/inventory parsing, stderr cleanup          |
-| `cache`        | on-disk cache: out paths, resolutions, inventories, eval hints, reverse lookup |
-| `model`        | `Event`, `AppState`, status/drift derivation, summary, exit code               |
-| `engine`       | orchestration (parallel probes/resolution/evals), discover, diff, uploads      |
-| `actions`      | activation commands, copy text, closure/build scripts                          |
-| `output`       | plain table, JSON report structs, diff text, hosts listing                     |
-| `live`         | `status` on a terminal: in-place redraw of the plain table                     |
-| `tui`          | fullscreen dashboard (`app` = pure state machine, `view` = rendering)          |
-| `cli`          | clap definitions and dispatch                                                  |
+| module      | responsibility                                                                 |
+| ----------- | ------------------------------------------------------------------------------ |
+| `util`      | durations, ages, sizes, glob, base64/OSC 52, truncation, terminal sanitizing   |
+| `storepath` | store path parsing; Nix `DrvName` split + `compareVersions`                    |
+| `closure`   | closure diff (same grouping as `nix store diff-closures`)                      |
+| `config`    | TOML schema, loading, overrides, validation, resolution into `Host`s           |
+| `local`     | which hosts are this machine                                                   |
+| `probe`     | builtin POSIX-sh probe script + framed output parser                           |
+| `remote`    | `CommandSpec`, quoting, ssh argv (mux, destinations), PATH prelude             |
+| `exec`      | process runner (setsid, process-group kill, caps), interactive runner          |
+| `nix`       | nix command builders, metadata/eval/inventory parsing, stderr cleanup          |
+| `cache`     | on-disk cache: out paths, resolutions, inventories, eval hints, reverse lookup |
+| `model`     | `Event`, `AppState`, status/drift derivation, summary, exit code               |
+| `engine`    | orchestration (parallel probes/resolution/evals), discover, diff, uploads      |
+| `actions`   | activation commands, copy text, closure/build scripts                          |
+| `output`    | plain table, JSON report structs, diff text, hosts listing                     |
+| `live`      | `status` on a terminal: in-place redraw of the plain table                     |
+| `tui`       | fullscreen dashboard (`app` = pure state machine, `view` = rendering)          |
+| `cli`       | clap definitions and dispatch                                                  |
 
 ## Probing the current generation
 
@@ -318,12 +325,12 @@ Forced-command routes: diff only from the local store.
 Per-host `activate` template + `activate-on` (`target`, default: run on the host;
 `local`: run here, for push tools). Defaults (all use `{flake}`):
 
-| kind           | default `activate`                                                                 |
-| -------------- | ---------------------------------------------------------------------------------- |
-| `nixos`        | `/run/current-system/sw/bin/nixos-rebuild switch --flake {flake}#{name} --sudo`     |
-| `darwin`       | `sudo /run/current-system/sw/bin/darwin-rebuild switch --flake {flake}#{name}`      |
+| kind           | default `activate`                                                                                                                                                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `nixos`        | `/run/current-system/sw/bin/nixos-rebuild switch --flake {flake}#{name} --sudo`                                                                                                                                          |
+| `darwin`       | `sudo /run/current-system/sw/bin/darwin-rebuild switch --flake {flake}#{name}`                                                                                                                                           |
 | `home-manager` | `out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths {flake}#.{attr}) && [ "$out" = {out} ] && "$out/activate"` (no CLI needed; refuses anything but the compared generation) |
-| `custom`       | none                                                                               |
+| `custom`       | none                                                                                                                                                                                                                     |
 
 Placeholders (values shell-quoted): `{flake}` locked URL, `{flake_url}` as
 configured, `{rev}`, `{name}`, `{attr}`, `{out}` desired store path,

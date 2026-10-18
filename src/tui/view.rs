@@ -172,6 +172,7 @@ impl Theme {
     fn status(self, status: Status) -> Style {
         match status {
             Status::UpToDate => self.fg(Color::Green),
+            Status::Ahead => self.fg(Color::Blue),
             Status::Outdated | Status::NotActivated => self.fg(Color::Yellow),
             Status::EvalFailed | Status::ProbeFailed => self.error(),
             Status::Unreachable => self.loud(Color::Magenta),
@@ -444,8 +445,9 @@ fn flake_spans(ctx: &Ctx, flake: &FlakeState, label: &str, with_age: bool) -> Ve
 /// `3 ✓  1 ✗  1 –`: how many hosts have each status (failures share `!`;
 /// what spins while a check runs is its progress, next to these).
 fn status_counts(ctx: &Ctx, compact: bool) -> Vec<Span<'static>> {
-    const ORDER: [Status; 7] = [
+    const ORDER: [Status; 8] = [
         Status::UpToDate,
+        Status::Ahead,
         Status::Outdated,
         Status::NotActivated,
         Status::EvalFailed,
@@ -588,7 +590,7 @@ fn detail_cell(ctx: &Ctx, h: &HostState) -> Vec<Span<'static>> {
     let mut parts: Vec<Span<'static>> = Vec::new();
     let mut note_shown = false;
     match h.status() {
-        Status::Outdated => {
+        Status::Outdated | Status::Ahead => {
             if let Some(drift) = h.drift() {
                 parts.push(Span::styled(drift_short(&drift, ctx.now_unix), t.dim()));
             }
@@ -1076,9 +1078,14 @@ fn details_lines(ctx: &Ctx, id: HostId, width: usize) -> Vec<Line<'static>> {
             vec![Span::raw(drift_long(drift, ctx.now_unix))],
             &mut out,
         );
-        if let (Drift::Revision { rev, .. }, Some(info)) = (drift, flake)
-            && let Some(url) = info.compare_url(rev)
-        {
+        let url = match (drift, flake) {
+            (Drift::Revision { rev, newer_by, .. }, Some(info)) => match newer_by {
+                Some(_) => info.compare_url_to(rev),
+                None => info.compare_url(rev),
+            },
+            _ => None,
+        };
+        if let Some(url) = url {
             kv(
                 "compare",
                 vec![Span::raw(flat(&url).into_owned())],
@@ -1123,7 +1130,7 @@ fn details_lines(ctx: &Ctx, id: HostId, width: usize) -> Vec<Line<'static>> {
                     Span::raw(flat(&activation.command).into_owned()),
                 ];
                 kv("activate", value, &mut out);
-                if let Some(warning) = &activation.warning {
+                for warning in activation.warning.iter().chain(&h.going_back()) {
                     kv(
                         "",
                         vec![Span::styled(flat(warning).into_owned(), t.warn())],
@@ -1923,6 +1930,7 @@ fn draw_help(frame: &mut Frame, area: Rect, ctx: &Ctx) {
     more.push(section("Status"));
     for status in [
         Status::UpToDate,
+        Status::Ahead,
         Status::Outdated,
         Status::NotActivated,
         Status::EvalFailed,
@@ -4000,6 +4008,19 @@ mod tests {
                 NOW_UNIX
             ),
             "on 1a2b3c4"
+        );
+        assert_eq!(
+            drift_short(
+                &Drift::Revision {
+                    rev: "1a2b3c4d".into(),
+                    last_modified: Some(NOW_UNIX - 600),
+                    from_generation: true,
+                    newer_by: Some(3 * 3600 + 120),
+                },
+                NOW_UNIX
+            ),
+            "on 1a2b3c4 (3h newer)",
+            "the same wording as the table"
         );
         let centered_rect = centered(Rect::new(10, 5, 40, 10), 20, 4);
         assert_eq!(centered_rect, Rect::new(20, 8, 20, 4));

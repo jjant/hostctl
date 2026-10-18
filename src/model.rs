@@ -171,6 +171,9 @@ pub enum Status {
     NotActivated,
     Pending,
     Offline,
+    /// Not the desired generation, but its generation records a revision
+    /// committed after the compared one (a branch being tried out, say).
+    Ahead,
     UpToDate,
 }
 
@@ -184,6 +187,7 @@ impl Status {
             Status::NotActivated => "not activated",
             Status::Pending => "pending",
             Status::Offline => "offline",
+            Status::Ahead => "ahead",
             Status::UpToDate => "up to date",
         }
     }
@@ -196,6 +200,7 @@ impl Status {
             Status::NotActivated => "○",
             Status::Pending => "…",
             Status::Offline => "–",
+            Status::Ahead => "↑",
             Status::UpToDate => "✓",
         }
     }
@@ -208,9 +213,23 @@ impl Status {
         )
     }
 
-    /// Activating would change something.
+    /// Activating would change something, and bring the host up to date
+    /// (an [`Status::Ahead`] host would go back).
     pub fn needs_activation(self) -> bool {
         matches!(self, Status::Outdated | Status::NotActivated)
+    }
+}
+
+impl Drift {
+    /// On a revision committed after the compared one.
+    pub fn is_newer(&self) -> bool {
+        matches!(
+            self,
+            Drift::Revision {
+                newer_by: Some(_),
+                ..
+            }
+        )
     }
 }
 
@@ -285,8 +304,17 @@ impl HostState {
 
     /// Derived from the latest values (stale ones count while a refresh
     /// runs). An eval failure wins over probe failures, which win over the
-    /// comparison.
+    /// comparison. An outdated host whose generation records a revision
+    /// committed after the compared one is [`Status::Ahead`].
     pub fn status(&self) -> Status {
+        match self.compared() {
+            Status::Outdated if self.drift().is_some_and(|d| d.is_newer()) => Status::Ahead,
+            status => status,
+        }
+    }
+
+    /// [`Self::status`], without telling ahead from outdated.
+    fn compared(&self) -> Status {
         if let Some(Err(_)) = self.eval.get() {
             return Status::EvalFailed;
         }
@@ -307,9 +335,9 @@ impl HostState {
         }
     }
 
-    /// Why an outdated host differs; `None` unless [`Status::Outdated`].
+    /// Why an outdated (or ahead) host differs; `None` otherwise.
     pub fn drift(&self) -> Option<Drift> {
-        if self.status() != Status::Outdated {
+        if self.compared() != Status::Outdated {
             return None;
         }
         let report = self.report()?;
@@ -331,8 +359,12 @@ impl HostState {
             .as_ref()
             .filter(|d| d.rev.as_deref() == Some(rev.as_str()))
             .and_then(|d| d.last_modified);
-        let newer_by = match (last_modified, desired.last_modified) {
-            (Some(deployed), Some(compared)) if deployed > compared => Some(deployed - compared),
+        // Only the generation's own word: a revision the cache matched by
+        // path may be just one of several that build the same thing.
+        let newer_by = match (from_generation, last_modified, desired.last_modified) {
+            (true, Some(deployed), Some(compared)) if deployed > compared => {
+                Some(deployed - compared)
+            }
             _ => None,
         };
         Some(Drift::Revision {
@@ -341,6 +373,31 @@ impl HostState {
             from_generation,
             newer_by,
         })
+    }
+
+    /// For an [`Status::Ahead`] host, why activating it is going back:
+    /// `runs 878d66c, a commit 8h newer than the compared one`.
+    pub fn going_back(&self) -> Option<String> {
+        if self.status() != Status::Ahead {
+            return None;
+        }
+        match self.drift()? {
+            Drift::Revision {
+                rev,
+                newer_by: Some(by),
+                ..
+            } => {
+                let short: String = rev.chars().take(7).collect();
+                let ago = crate::util::format_ago(0, by);
+                let by = ago.strip_suffix(" ago").unwrap_or(&ago);
+                Some(format!(
+                    "{} runs {}, a commit {by} newer than the compared one: this goes back",
+                    crate::util::one_line(&self.host.name),
+                    crate::util::one_line(&short)
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Something is in flight for this host.
@@ -434,6 +491,7 @@ pub struct Summary {
     pub up_to_date: usize,
     /// Outdated or not activated.
     pub outdated: usize,
+    pub ahead: usize,
     pub trouble: usize,
     pub pending: usize,
     pub offline: usize,
@@ -640,6 +698,7 @@ impl AppState {
             match h.status() {
                 Status::UpToDate => s.up_to_date += 1,
                 Status::Outdated | Status::NotActivated => s.outdated += 1,
+                Status::Ahead => s.ahead += 1,
                 Status::Pending => s.pending += 1,
                 Status::Offline => s.offline += 1,
                 Status::EvalFailed | Status::ProbeFailed | Status::Unreachable => s.trouble += 1,
@@ -652,7 +711,8 @@ impl AppState {
     /// `nix` or `ssh` couldn't be run at all (the CLI decides the other 3s
     /// before there is a state); `2` if any host is in trouble or pending,
     /// a global error occurred or a flake is stale; else `1` if any host
-    /// needs activation; else `0`.
+    /// needs activation or is ahead (it doesn't run the compared
+    /// configuration either); else `0`.
     pub fn exit_code(&self) -> u8 {
         let s = self.summary();
         let stale = self
@@ -665,7 +725,7 @@ impl AppState {
             3
         } else if s.trouble > 0 || s.pending > 0 || !self.errors.is_empty() || stale {
             2
-        } else if s.outdated > 0 {
+        } else if s.outdated > 0 || s.ahead > 0 {
             1
         } else {
             0
@@ -951,21 +1011,38 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(revision(&s, 0), (Some(1600), Some(600)));
+        assert_eq!(s.hosts[0].status(), Status::Ahead);
+        assert_eq!(
+            s.hosts[0].going_back().as_deref(),
+            Some("a runs rev-x, a commit 10m newer than the compared one: this goes back")
+        );
+        assert_eq!(s.summary().ahead, 1);
+        assert_eq!(s.exit_code(), 1, "not the compared configuration either");
         // Only the hosts of that flake running that revision.
         assert_eq!(revision(&s, 1), (None, None));
         assert_eq!(revision(&s, 2), (None, None));
         dated(&mut s, "rev-y", 400);
         assert_eq!(revision(&s, 2), (Some(400), None), "older");
-        // A probe that now finds another revision drops the old date.
-        probed(
-            &mut s,
-            0,
-            Ok(ProbeReport {
-                revision: Some("rev-y".into()),
-                ..report('a')
-            }),
+        assert_eq!(s.hosts[2].status(), Status::Outdated);
+        // A date for another revision than the generation records is no
+        // date for it.
+        s.apply(
+            Event::ProbeFinished {
+                id: 0,
+                result: Ok(ProbeReport {
+                    revision: Some("rev-y".into()),
+                    ..report('a')
+                }),
+                deployed: Some(DeployedRev {
+                    flake: "f".into(),
+                    rev: Some("rev-x".into()),
+                    last_modified: Some(1600),
+                }),
+            },
+            Instant::now(),
         );
         assert_eq!(revision(&s, 0), (None, None));
+        assert_eq!(s.hosts[0].status(), Status::Outdated);
     }
 
     #[test]
@@ -1059,6 +1136,7 @@ mod tests {
                 total: 3,
                 up_to_date: 1,
                 outdated: 1,
+                ahead: 0,
                 trouble: 1,
                 pending: 0,
                 offline: 0,

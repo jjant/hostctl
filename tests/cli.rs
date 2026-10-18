@@ -788,7 +788,7 @@ fn the_json_report_has_every_field() {
     assert_eq!(report["errors"], json!([]));
     assert_eq!(
         report["summary"],
-        json!({ "total": 5, "upToDate": 2, "outdated": 2, "trouble": 0, "pending": 0, "offline": 1 })
+        json!({ "total": 5, "upToDate": 2, "outdated": 2, "ahead": 0, "trouble": 0, "pending": 0, "offline": 1 })
     );
     let locked = World::locked(FLAKE, REV1);
     let modified = report["flakes"][0]["lastModified"].as_i64().unwrap();
@@ -1262,7 +1262,7 @@ fn offline_evaluates_nothing_the_cache_lacks() {
 }
 
 #[test]
-fn a_host_on_a_newer_commit_says_so_and_is_left_out_of_the_update() {
+fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     let w = World::new();
     w.flake(REV1);
     discover_home(&w, &["web1", "web2"]);
@@ -1277,16 +1277,33 @@ fn a_host_on_a_newer_commit_says_so_and_is_left_out_of_the_update() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✗ outdated  gen 5 · 3d ago · on 2222222 (1h newer)\
+         \n  web1  ↑ ahead     gen 5 · 3d ago · on 2222222 (1h newer)\
          \n  web2  ✗ outdated  gen 5 · 3d ago · unknown generation\n\
-         \n2 outdated · <took>\nupdate: hostctl activate web2\n"
+         \n1 outdated · 1 ahead · <took>\nupdate: hostctl activate web2\n"
     );
     let lookups = || w.nix_calls(&format!("{FLAKE}/{REV2}"));
     assert_eq!(lookups().len(), 1, "{}", w.log());
     let json = w.run(&["status", "--json"]).json();
+    assert_eq!(json["hosts"][0]["status"], "ahead");
     assert_eq!(json["hosts"][0]["drift"]["newer"], true);
+    assert_eq!(json["summary"]["ahead"], 1);
     // The cache remembers the date.
     assert_eq!(lookups().len(), 1, "{}", w.log());
+    // Going back takes asking for it.
+    let run = w.run(&["activate", "--yes", "web1"]);
+    assert!(
+        run.stdout.contains(
+            "\nnothing to activate: web1 ahead of the compared revision (--force goes back)\n"
+        ),
+        "{run}"
+    );
+    let run = w.run(&["activate", "--yes", "--force", "web1"]);
+    assert!(
+        run.stdout.contains(
+            "warning: web1 runs 2222222, a commit 1h newer than the compared one: this goes back"
+        ),
+        "{run}"
+    );
 }
 
 #[test]

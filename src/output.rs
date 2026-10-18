@@ -46,6 +46,7 @@ const RED: &str = "31";
 const GREEN: &str = "32";
 const YELLOW: &str = "33";
 const MAGENTA: &str = "35";
+const BLUE: &str = "34";
 const CYAN: &str = "36";
 
 /// The `hostctl status` table, for the terminal and for `--plain`:
@@ -68,10 +69,11 @@ const CYAN: &str = "36";
 /// - one row per host in state order: name (+ ` •` when local, ` •?` when
 ///   assumed local), `icon label` (pending rows show their activity and
 ///   elapsed time, e.g. `… evaluating 3s`, or `… interrupted`), detail:
-///   up-to-date/outdated →
+///   up-to-date/outdated/ahead →
 ///   `gen N · <activated age>` plus the drift (`on <rev7> (<age> old)`,
-///   `same rev, different build`, `staged: switch/reboot pending`,
-///   `unknown generation`) and badges (`⟳ reboot`, `specialisation X`);
+///   `on <rev7> (<age> newer)`, `same rev, different build`, `staged:
+///   switch/reboot pending`, `unknown generation`) and badges (`⟳ reboot`,
+///   `specialisation X`);
 ///   not activated → the reason; failures → the error summary (offline:
 ///   only without a note); then the host's `note`, if any;
 /// - columns aligned by display width; with `width`, every line is cut with
@@ -79,11 +81,12 @@ const CYAN: &str = "36";
 ///   alone don't fit); without it nothing is truncated;
 /// - footer: non-zero counts in [`Status`] order, the `•` legend when a
 ///   local host is shown, the last run's duration if known; then `update:
-///   hostctl activate <names>` for hosts that need activation and have an
-///   activation (`hostctl` as [`AppState::command`] says, with the flags
-///   this run was given); then `error: <summary>` per global error;
-/// - with `style.color`: green ✓, yellow ✗ and ○, red !, magenta ?, cyan
-///   pending, dim offline, detail and footer.
+///   hostctl activate <names>` for hosts that need activation (not ahead
+///   ones) and have an activation (`hostctl` as [`AppState::command`] says,
+///   with the flags this run was given); then `error: <summary>` per global
+///   error;
+/// - with `style.color`: green ✓, blue ↑, yellow ✗ and ○, red !, magenta ?,
+///   cyan pending, dim offline, detail and footer.
 ///
 /// Untrusted text (names, notes, probe answers) is sanitized and kept on
 /// one line.
@@ -147,7 +150,7 @@ fn render_status(
 }
 
 /// Every status, most urgent first (the footer's order).
-const STATUSES: [Status; 8] = [
+const STATUSES: [Status; 9] = [
     Status::EvalFailed,
     Status::ProbeFailed,
     Status::Unreachable,
@@ -155,6 +158,7 @@ const STATUSES: [Status; 8] = [
     Status::NotActivated,
     Status::Pending,
     Status::Offline,
+    Status::Ahead,
     Status::UpToDate,
 ];
 
@@ -165,6 +169,7 @@ fn status_color(status: Status) -> &'static str {
         Status::Outdated | Status::NotActivated => YELLOW,
         Status::Pending => CYAN,
         Status::Offline => DIM,
+        Status::Ahead => BLUE,
         Status::UpToDate => GREEN,
     }
 }
@@ -241,7 +246,7 @@ fn detail(h: &HostState, status: Status, now_unix: i64) -> String {
     let mut out = String::new();
     let report = h.report();
     match status {
-        Status::UpToDate | Status::Outdated => {
+        Status::UpToDate | Status::Outdated | Status::Ahead => {
             if let Some(r) = report {
                 if let Some(generation) = r.generation {
                     item(&mut out, format_args!("gen {generation}"));
@@ -403,15 +408,8 @@ fn footer<'a>(state: &'a AppState, rows: &[Row<'_>]) -> Vec<Line<'a>> {
     let mut names = String::new();
     let mut option_like = false;
     for (h, row) in state.hosts.iter().zip(rows) {
-        // A host on a newer commit would go back.
-        let newer = matches!(
-            h.drift(),
-            Some(Drift::Revision {
-                newer_by: Some(_),
-                ..
-            })
-        );
-        if row.status.needs_activation() && !newer && activation(state, h).is_some() {
+        // Not an ahead host: it would go back.
+        if row.status.needs_activation() && activation(state, h).is_some() {
             let name = one_line(&h.host.name);
             option_like |= name.starts_with('-');
             names.push(' ');
@@ -1299,7 +1297,7 @@ mod tests {
             let result = Ok(Desired {
                 path: sp(path),
                 rev: Some(REV.into()),
-                last_modified: None,
+                last_modified: github().last_modified,
                 cached: true,
             });
             self.apply(300, Event::EvalFinished { id, result });
@@ -1356,7 +1354,7 @@ mod tests {
         Ok(Desired {
             path: sp(path),
             rev: Some(REV.into()),
-            last_modified: None,
+            last_modified: github().last_modified,
             cached: false,
         })
     }
@@ -1478,6 +1476,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
     const E_NEW: HostId = 6;
     const E_WEB1: HostId = 7;
     const E_WEB2: HostId = 8;
+    const E_TRYOUT: HostId = 9;
 
     /// One host per status, halfway through a check.
     fn every_status() -> Sim {
@@ -1491,9 +1490,24 @@ update: hostctl activate al2-aarch64 al2-x86_64
             hm("new-box"),
             host("web1", Kind::Nixos),
             host("web2", Kind::Nixos),
+            host("tryout", Kind::Nixos),
         ]);
         sim.started();
         sim.resolved(github());
+        // A branch commit, 3 h after the compared one.
+        let branch = "9b8a7c6d5e4f30211223344556677889900aabbc";
+        sim.probed_deployed(
+            E_TRYOUT,
+            with(active(HM_8, 12, 20 * MIN), |r| {
+                r.revision = Some(branch.into())
+            }),
+            Some(DeployedRev {
+                flake: GITHUB.into(),
+                rev: Some(branch.into()),
+                last_modified: github().last_modified.map(|t| t + 3 * 3600),
+            }),
+        );
+        sim.evaluated(E_TRYOUT, wants(HM_9));
         sim.probed_deployed(
             E_AARCH64,
             active(HM_1, 93, 4 * MONTH + 2 * DAY),
@@ -1667,6 +1681,8 @@ update: hostctl activate al2-aarch64 al2-x86_64
             host("nixos-gaming", Kind::Nixos),
             host("nixos-reboot", Kind::Nixos),
             host("nixos-uptodate", Kind::Nixos),
+            host("darwin-dated", Kind::Darwin),
+            host("darwin-ahead", Kind::Darwin),
         ]);
         sim.finished();
         sim.resolved(github());
@@ -1723,6 +1739,27 @@ update: hostctl activate al2-aarch64 al2-x86_64
             with(active(&nixos_new, 121, DAY), |r| r.reboot_required = true),
         );
         sim.cached(8, &nixos_new);
+        // Recorded revisions that were dated: an older one, a newer one.
+        let dated = |rev: &str, at: Option<i64>| {
+            Some(DeployedRev {
+                flake: GITHUB.into(),
+                rev: Some(rev.into()),
+                last_modified: at,
+            })
+        };
+        sim.probed_deployed(
+            9,
+            with(active(&darwin_old, 40, 3 * 7 * DAY), revision(OLD_REV)),
+            dated(OLD_REV, Some(NOW - 3 * 7 * DAY - DAY)),
+        );
+        sim.cached(9, &darwin_new);
+        let branch = "9b8a7c6d5e4f30211223344556677889900aabbc";
+        sim.probed_deployed(
+            10,
+            with(active(&darwin_old, 43, 20 * MIN), revision(branch)),
+            dated(branch, github().last_modified.map(|t| t + 2 * HOUR)),
+        );
+        sim.cached(10, &darwin_new);
         sim
     }
 
@@ -1749,6 +1786,17 @@ update: hostctl activate al2-aarch64 al2-x86_64
                 ..
             }
         )));
+        assert!(drifts.iter().flatten().any(|d| matches!(
+            d,
+            Drift::Revision {
+                from_generation: true,
+                last_modified: Some(_),
+                newer_by: None,
+                ..
+            }
+        )));
+        assert!(drifts.iter().flatten().any(Drift::is_newer));
+        assert_eq!(sim.state.hosts[10].status(), Status::Ahead);
         assert_eq!(
             sim.state.hosts[D_SPECIALISATION].status(),
             Status::UpToDate,
@@ -2158,7 +2206,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
     fn statuses_are_listed_most_urgent_first() {
         assert!(STATUSES.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(STATUSES[0], Status::EvalFailed);
-        assert_eq!(STATUSES[7], Status::UpToDate);
+        assert_eq!(STATUSES[8], Status::UpToDate);
     }
 
     #[test]
@@ -2300,7 +2348,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
         assert_eq!(
             json["summary"],
             serde_json::json!({
-                "total": 9, "upToDate": 1, "outdated": 2, "trouble": 3, "pending": 2, "offline": 1
+                "total": 10, "upToDate": 1, "outdated": 2, "ahead": 1, "trouble": 3, "pending": 2, "offline": 1
             })
         );
         let hosts = &json["hosts"];

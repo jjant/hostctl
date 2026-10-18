@@ -1480,7 +1480,14 @@ fn activation_of(state: &AppState, id: HostId) -> Result<Activation, String> {
     let flake = state
         .flake_info(&h.host.flake)
         .ok_or_else(|| "its flake couldn't be resolved".to_string())?;
-    actions::activation(&h.host, flake, &desired.path)
+    let mut activation = actions::activation(&h.host, flake, &desired.path)?;
+    if let Some(back) = h.going_back() {
+        activation.warning = Some(match activation.warning.take() {
+            Some(warning) => format!("{warning}; {back}"),
+            None => back,
+        });
+    }
+    Ok(activation)
 }
 
 /// `<name>: <command>` (continuation lines indented), then where it runs
@@ -1516,10 +1523,26 @@ fn nothing_to_activate(state: &AppState) -> String {
     let unchecked: Vec<_> = state
         .hosts
         .iter()
-        .filter(|h| !matches!(h.status(), Status::UpToDate | Status::Offline))
+        .filter(|h| {
+            !matches!(
+                h.status(),
+                Status::UpToDate | Status::Offline | Status::Ahead
+            )
+        })
         .map(|h| format!("{} ({})", util::one_line(&h.host.name), h.status().label()))
         .collect();
-    if unchecked.is_empty() {
+    let ahead: Vec<_> = state
+        .hosts
+        .iter()
+        .filter(|h| h.status() == Status::Ahead)
+        .map(|h| util::one_line(&h.host.name).into_owned())
+        .collect();
+    if unchecked.is_empty() && !ahead.is_empty() {
+        format!(
+            "\nnothing to activate: {} ahead of the compared revision (--force goes back)\n",
+            ahead.join(", ")
+        )
+    } else if unchecked.is_empty() {
         "\nnothing to activate: up to date (--force activates anyway)\n".into()
     } else {
         format!(

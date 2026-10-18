@@ -357,6 +357,17 @@ impl FlakeInfo {
     /// compare view, so its log at this revision). `None` unless both
     /// revisions are hex (a `-dirty` suffix on `from` is ignored).
     pub fn compare_url(&self, from: &str) -> Option<String> {
+        self.compare_url_between(from, false)
+    }
+
+    /// [`Self::compare_url`] the other way: what the newer revision `to`
+    /// has that this one hasn't (sourcehut: the log at `to`).
+    pub fn compare_url_to(&self, to: &str) -> Option<String> {
+        self.compare_url_between(to, true)
+    }
+
+    fn compare_url_between(&self, other: &str, newer: bool) -> Option<String> {
+        let from = other;
         let kind = self.kind.as_deref()?;
         let default_host = match kind {
             "github" => "github.com",
@@ -387,10 +398,11 @@ impl FlakeInfo {
             percent_decode(owner),
             percent_decode(repo)
         );
+        let (from, to) = if newer { (rev, from) } else { (from, rev) };
         Some(match kind {
-            "github" => format!("{base}/compare/{from}...{rev}"),
-            "gitlab" => format!("{base}/-/compare/{from}...{rev}"),
-            _ => format!("{base}/log/{rev}"),
+            "github" => format!("{base}/compare/{from}...{to}"),
+            "gitlab" => format!("{base}/-/compare/{from}...{to}"),
+            _ => format!("{base}/log/{to}"),
         })
     }
 }
@@ -1537,6 +1549,13 @@ error:
         assert_eq!(
             info.compare_url("1a2b3c4-dirty").as_deref(),
             info.compare_url("1a2b3c4").as_deref()
+        );
+        // A host ahead: what it has that the compared revision hasn't.
+        assert_eq!(
+            info.compare_url_to("1a2b3c4").as_deref(),
+            Some(
+                "https://github.com/jjant/nix-config/compare/42ea902131b93c04d098d3bcd02f29305b4bad7c...1a2b3c4"
+            )
         );
         let at = |kind: &str, locked: &str| FlakeInfo {
             kind: Some(kind.into()),

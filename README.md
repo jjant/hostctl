@@ -45,9 +45,9 @@ hostctl activate HOST…     activate the generation that was compared
 hostctl hosts              list the hosts and how each one is reached
 ```
 
-`status` exits with 0 when every host is up to date, 1 when some host is
-outdated and 2 when one is unreachable or failed. In the dashboard, `Enter`
-shows the diff, `a` activates, `r` checks again and `?` lists the keys.
+`status` exits with 0 when every host is up to date, 1 when some host runs
+something else and 2 when one is unreachable or failed. In the dashboard,
+`Enter` shows the diff, `a` activates, `r` checks again and `?` lists the keys.
 
 ## Install
 

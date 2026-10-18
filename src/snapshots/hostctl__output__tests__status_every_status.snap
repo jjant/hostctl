@@ -13,6 +13,7 @@ github:jjant/nix-config @ 42ea902 (2h ago)
   new-box        … waiting
   web1           ? unreachable    ssh: Could not resolve hostname web1: Name or service not known
   web2           ! probe failed   connection dropped / timed out after connecting
+  tryout         ↑ ahead          gen 12 · 20m ago · on 9b8a7c6 (3h newer)
 
-1 eval failed · 1 probe failed · 1 unreachable · 1 outdated · 1 not activated · 2 pending · 1 offline · 1 up to date · • this machine
+1 eval failed · 1 probe failed · 1 unreachable · 1 outdated · 1 not activated · 2 pending · 1 offline · 1 ahead · 1 up to date · • this machine
 update: hostctl activate al2-aarch64 al2-x86_64
