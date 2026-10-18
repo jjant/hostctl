@@ -2183,17 +2183,55 @@ fn config_check_reads_nothing_but_the_file() {
 }
 
 #[test]
-fn completions_for_bash_zsh_and_fish() {
+fn completions_ask_hostctl() {
     let w = World::new();
     // They don't need a valid config.
     w.config("bogus = 1\n");
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
         let run = w.run(&["completions", shell]);
         run.code(0);
-        assert!(run.stdout.len() > 1000, "{shell}: {run}");
-        for word in ["hostctl", "activate", "offline"] {
-            assert!(run.stdout.contains(word), "{shell} completes {word}");
-        }
+        assert!(run.stdout.contains("COMPLETE"), "{shell}: {run}");
+        assert!(run.stdout.contains("hostctl"), "{shell}: {run}");
     }
     w.run(&["completions", "tcsh"]).code(3);
+}
+
+#[test]
+fn completions_offer_the_hosts_hostctl_knows() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2"]);
+    w.config("[hosts.wiki]\nkind = \"nixos\"\n");
+    home_host(&w, "web1", &hm('a'), &hm('a'));
+    home_host(&w, "web2", &hm('b'), &hm('b'));
+    w.eval(
+        "nixosConfigurations.wiki.config.system.build.toplevel",
+        &hm('c'),
+    );
+    w.host("wiki").system(&hm('c'), 1, &hm('c'));
+    // The discovered hosts come from the cache a check left.
+    w.run(&["status"]);
+    let calls = w.calls().len();
+    w.env("COMPLETE", Some("fish"));
+    for (words, want) in [
+        (&["activate", "w"][..], &["web1", "web2", "wiki"][..]),
+        (&["diff", "web"], &["web1", "web2"]),
+        (&["status", "@"], &["@local"]),
+    ] {
+        let args: Vec<&str> = ["--", "hostctl"].iter().chain(words).copied().collect();
+        let run = w.run(&args);
+        run.code(0);
+        let offered: Vec<&str> = run.stdout.lines().filter(|l| !l.starts_with('-')).collect();
+        assert_eq!(offered, want, "{words:?}: {run}");
+    }
+    // Completing reached no host and evaluated nothing (only `nix
+    // --version`, for the cache's key).
+    let extra: Vec<_> = w.calls().into_iter().skip(calls).collect();
+    assert!(
+        extra
+            .iter()
+            .all(|c| c.tool == "nix" && c.args == "--version"),
+        "{}",
+        w.log()
+    );
 }

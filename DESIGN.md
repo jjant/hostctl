@@ -441,6 +441,12 @@ bytes as `--plain`, no line cut; in tmux it never floods the scrollback, and
 Ctrl-Z suspends it. The footer lists `update: hostctl activate <outdated…>`
 (with the `-c`/`--flake`/`--self` given).
 
+Completions are clap_complete's dynamic ones: `hostctl completions SHELL` prints
+the registration (`COMPLETE=<shell> hostctl -- <words>` at each TAB), and host
+arguments complete to the hosts `hosts --offline` would list (config, plus
+discovery and inventory from the cache; `nix --version` for the cache key is the
+only process).
+
 ## Process execution
 
 `exec::run`: children start in their own session (`setsid`, no controlling

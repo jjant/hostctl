@@ -1,5 +1,6 @@
 //! Command-line interface: argument definitions and dispatch.
 
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
@@ -97,6 +98,7 @@ pub enum Cmd {
     /// Check every host and print a table (the default)
     Status {
         /// Only hosts matching these globs (or @local)
+        #[arg(add = ArgValueCompleter::new(complete_hosts))]
         hosts: Vec<String>,
         /// Print JSON
         #[arg(long)]
@@ -107,6 +109,7 @@ pub enum Cmd {
     },
     /// Show what activating would change on a host (closure diff)
     Diff {
+        #[arg(add = ArgValueCompleter::new(complete_hosts))]
         host: String,
         /// Build/fetch the new generation on the host if it isn't anywhere yet
         #[arg(long)]
@@ -118,7 +121,7 @@ pub enum Cmd {
     /// Activate the flake's configuration on hosts (interactive)
     Activate {
         /// Hosts (globs or @local) to activate
-        #[arg(required = true)]
+        #[arg(required = true, add = ArgValueCompleter::new(complete_hosts))]
         hosts: Vec<String>,
         /// Don't ask for confirmation
         #[arg(short, long)]
@@ -130,6 +133,7 @@ pub enum Cmd {
     /// List the hosts, where they come from and how they're reached
     Hosts {
         /// Only hosts matching these globs (or @local)
+        #[arg(add = ArgValueCompleter::new(complete_hosts))]
         hosts: Vec<String>,
     },
     /// Inspect the configuration
@@ -137,7 +141,8 @@ pub enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
-    /// Print shell completions
+    /// Print the shell code that completes hostctl's commands, flags and
+    /// host names (it calls hostctl to complete)
     Completions { shell: clap_complete::Shell },
 }
 
@@ -158,6 +163,9 @@ pub enum ConfigCmd {
 pub fn main() -> ExitCode {
     // What the footer's duration counts from.
     let started = Instant::now();
+    // `COMPLETE=<shell> hostctl -- <words>`: the shell asking for completions
+    // (see `hostctl completions`).
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
     let (cli, given) = match parse(std::env::args_os()) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -1600,10 +1608,65 @@ fn completions(shell: clap_complete::Shell) -> Result<u8, Exit> {
     Ok(0)
 }
 
+/// What `COMPLETE=<shell> hostctl` prints: shell code that asks hostctl
+/// (whichever is on `PATH`, so it always matches) for completions.
 fn completion_script(shell: clap_complete::Shell) -> String {
     let mut script = Vec::new();
-    clap_complete::generate(shell, &mut Cli::command(), "hostctl", &mut script);
-    String::from_utf8_lossy(&script).into_owned()
+    let shells = clap_complete::env::Shells::builtins();
+    if let Some(completer) = shells.completer(&shell.to_string()) {
+        // Writing into a Vec can't fail.
+        let _ =
+            completer.write_registration("COMPLETE", "hostctl", "hostctl", "hostctl", &mut script);
+    }
+    let mut script = String::from_utf8_lossy(&script).into_owned();
+    if shell == clap_complete::Shell::Zsh {
+        // Autoloaded from $fpath as `_hostctl`, the file is the completion
+        // function: complete right away, not only from the next TAB on.
+        script.push_str(
+            "[[ ${funcstack[1]-} == _hostctl ]] && _clap_dynamic_completer_hostctl \"$@\"\n",
+        );
+    }
+    script
+}
+
+/// Host names (and `@local`) starting with `current`, for the shell.
+fn complete_hosts(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let prefix = current.to_string_lossy();
+    let mut names = completion_hosts();
+    names.push("@local".into());
+    names
+        .into_iter()
+        .filter(|name| name.starts_with(&*prefix))
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
+/// The hosts `hostctl hosts --offline` would list, from the configuration
+/// and the cache only: completing must be quick, and never wait on the
+/// network. Nothing when they can't be found.
+fn completion_hosts() -> Vec<String> {
+    let Ok(cli) = Cli::try_parse_from(["hostctl"]) else {
+        return Vec::new();
+    };
+    let Ok(setup) = Setup::load(&cli.global, "hostctl", Instant::now()) else {
+        return Vec::new();
+    };
+    let config = &setup.config;
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return Vec::new();
+    };
+    let discovered = runtime.block_on(async {
+        let engine = Engine::new(config, open_cache(config), Freshness::Offline);
+        let flake = discovery_flake(config)?;
+        engine.discover(flake).await.ok().map(|(_, hosts)| hosts)
+    });
+    config
+        .resolve_hosts(discovered.as_ref(), &setup.local)
+        .map(|resolved| resolved.hosts.into_iter().map(|host| host.name).collect())
+        .unwrap_or_default()
 }
 
 /// The config file hostctl reads: `explicit` (`--config`, which clap fills
@@ -2193,8 +2256,8 @@ mod tests {
         use clap::ValueEnum as _;
         for shell in clap_complete::Shell::value_variants() {
             let script = completion_script(*shell);
+            assert!(script.contains("COMPLETE"), "{shell}: asks hostctl");
             assert!(script.contains("hostctl"), "{shell}");
-            assert!(script.contains("activate"), "{shell}: subcommands complete");
         }
     }
 

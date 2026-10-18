@@ -41,6 +41,12 @@ no line cut. The `update: hostctl activate …` it suggests keeps the
 `-c`/`--flake`/`--self` you passed. With `--offline`, hosts that have no cached
 results show `not cached; run hostctl once without --offline`.
 
+Shell completions (installed with the package; else `hostctl completions fish
+> ~/.config/fish/completions/hostctl.fish` and the like) ask hostctl itself what
+to complete, so they also offer the host names: the configured hosts and those
+the last check found in the flake, read from the config and hostctl's cache,
+without touching the network.
+
 `diff` lists package changes the way `nix store diff-closures` groups them,
 from both closures read on the host. When the desired generation exists
 nowhere yet, `--build` builds or fetches it on the
