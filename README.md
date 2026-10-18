@@ -22,10 +22,10 @@ hosts answer):
 $ hostctl status
 github:you/nix-config @ 42ea902 (2h ago)
 
-  desk •  ✗ outdated       on 1a2b3c4 (3d old)
-  laptop  – offline        reachable from the desk only
-  nas     ✓ up to date
-  work    ○ not activated  no home-manager profile
+  ✗ desk •  outdated       on 1a2b3c4 (3d old)
+  – laptop  offline        reachable from the desk only
+  ✓ nas     up to date
+  ○ work    not activated  no home-manager profile
 
 update: hostctl activate desk work
 ```

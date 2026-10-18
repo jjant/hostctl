@@ -4,4 +4,4 @@ expression: "sim.table(NO_COLOR, None)"
 ---
 github:jjant/nix-config @ 42ea902 (2h ago) · stale: unable to download 'https://api.github.com/repos/jjant/nix-config/commits/HEAD': HTTP error 403 · flake.lock out of date
 
-  bigmem  ✓ up to date
+  ✓ bigmem  up to date

@@ -4,6 +4,6 @@ expression: table
 ---
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  bigmem •   ✓ up to date
-  mac-m1 •?  ✓ up to date
-  web1       ✓ up to date
+  ✓ bigmem •   up to date
+  ✓ mac-m1 •?  up to date
+  ✓ web1       up to date

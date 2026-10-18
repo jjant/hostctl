@@ -4,16 +4,16 @@ expression: "sim.table(NO_COLOR, None)"
 ---
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  darwin-gen      ✗ outdated    on 1a2b3c4
-  dirty-mac       ✗ outdated    on a8f62b6-dirty
-  hm-cache        ✗ outdated    on 1a2b3c4 (4mo old)
-  hm-same         ✗ outdated    same rev, different build
-  hm-staged       ✗ outdated    staged: switch/reboot pending
-  hm-unknown      ✗ outdated
-  nixos-gaming    ✓ up to date  specialisation gaming
-  nixos-reboot    ✗ outdated    on 1a2b3c4 · ⟳ reboot
-  nixos-uptodate  ✓ up to date  ⟳ reboot
-  darwin-dated    ✗ outdated    on 1a2b3c4 (3w old)
-  darwin-ahead    ↑ ahead       on 9b8a7c6 (2h newer)
+  ✗ darwin-gen      outdated    on 1a2b3c4
+  ✗ dirty-mac       outdated    on a8f62b6-dirty
+  ✗ hm-cache        outdated    on 1a2b3c4 (4mo old)
+  ✗ hm-same         outdated    same rev, different build
+  ✗ hm-staged       outdated    staged: switch/reboot pending
+  ✗ hm-unknown      outdated
+  ✓ nixos-gaming    up to date  specialisation gaming
+  ✗ nixos-reboot    outdated    on 1a2b3c4 · ⟳ reboot
+  ✓ nixos-uptodate  up to date  ⟳ reboot
+  ✗ darwin-dated    outdated    on 1a2b3c4 (3w old)
+  ↑ darwin-ahead    ahead       on 9b8a7c6 (2h newer)
 
 update: hostctl activate darwin-gen dirty-mac hm-cache hm-same hm-staged hm-unknown nixos-reboot darwin-dated

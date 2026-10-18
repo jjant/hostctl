@@ -54,10 +54,10 @@ const CYAN: &str = "36";
 /// ```text
 /// github:jjant/nix-config @ 42ea902 (2h ago)
 ///
-///   al2-aarch64  ✗ outdated       on 1a2b3c4 (4mo old)
-///   al2-x86_64   ○ not activated  no home-manager profile
-///   bigmem •     ✓ up to date
-///   mac-m1       – offline        reachable only from a desk you ssh into from the Mac
+///   ✗ al2-aarch64  outdated       on 1a2b3c4 (4mo old)
+///   ○ al2-x86_64   not activated  no home-manager profile
+///   ✓ bigmem •     up to date
+///   – mac-m1       offline        reachable only from a desk you ssh into from the Mac
 ///
 /// update: hostctl activate al2-aarch64 al2-x86_64
 /// ```
@@ -65,9 +65,10 @@ const CYAN: &str = "36";
 /// - header: one line per flake in use: `<flake> @ <short rev> (<age of
 ///   lastModified>)`, plus ` · stale: <reason>` / ` · flake.lock out of date`,
 ///   or `<flake>: <error summary>` (` · resolving…` while it resolves);
-/// - one row per host in state order: name (+ ` •` when local, ` •?` when
-///   assumed local), `icon label` (pending rows show their activity and
-///   elapsed time, e.g. `… evaluating 3s`, or `… interrupted`), detail:
+/// - one row per host in state order: the status's icon, name (+ ` •` when
+///   local, ` •?` when assumed local), label (pending rows show their
+///   activity and elapsed time, e.g. `evaluating 3s`, or `interrupted`),
+///   detail:
 ///   up-to-date/outdated/ahead → the drift (`on <rev7> (<age> old)`, `on
 ///   <branch> (<rev7>, <age> newer)`, `same rev, different build`, `staged:
 ///   switch/reboot pending`; nothing when the revision is unknown) and
@@ -123,6 +124,8 @@ fn render_status(
             let color = status_color(row.status);
             let mut line = Line::default();
             line.push("  ", PLAIN)
+                .push(row.status.icon(), color)
+                .push(" ", PLAIN)
                 .padded(&*row.name, PLAIN, name_w)
                 .push("  ", PLAIN);
             if row.detail.is_empty() {
@@ -188,11 +191,11 @@ fn display_name(host: &Host) -> Cow<'_, str> {
     }
 }
 
-/// `icon label`; a pending host says what it waits for, and for how long
-/// (or that the check was interrupted).
+/// The status's label; a pending host says what it waits for, and for how
+/// long (or that the check was interrupted).
 fn status_label(h: &HostState, status: Status, now: Instant, interrupted: bool) -> String {
     if status != Status::Pending {
-        return format!("{} {}", status.icon(), status.label());
+        return status.label().into();
     }
     let interrupted = !h.busy()
         && (interrupted
@@ -209,8 +212,8 @@ fn status_label(h: &HostState, status: Status, now: Instant, interrupted: bool) 
         h.probe.running_for(now),
     ];
     match running.into_iter().flatten().next().and_then(ticking) {
-        Some(elapsed) => format!("{} {activity} {elapsed}", status.icon()),
-        None => format!("{} {activity}", status.icon()),
+        Some(elapsed) => format!("{activity} {elapsed}"),
+        None => activity.into(),
     }
 }
 
@@ -1429,10 +1432,10 @@ mod tests {
         let doc = "\
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  al2-aarch64  ✗ outdated       on 1a2b3c4 (4mo old)
-  al2-x86_64   ○ not activated  no home-manager profile
-  bigmem •     ✓ up to date
-  mac-m1       – offline        reachable only from a desk you ssh into from the Mac
+  ✗ al2-aarch64  outdated       on 1a2b3c4 (4mo old)
+  ○ al2-x86_64   not activated  no home-manager profile
+  ✓ bigmem •     up to date
+  – mac-m1       offline        reachable only from a desk you ssh into from the Mac
 
 update: hostctl activate al2-aarch64 al2-x86_64
 ";
@@ -1546,14 +1549,15 @@ update: hostctl activate al2-aarch64 al2-x86_64
         let colored = sim.table(COLOR, None);
         assert_eq!(strip_sgr(&colored), sim.table(NO_COLOR, None));
         for painted in [
-            "\x1b[32m✓ up to date\x1b[0m",
-            "\x1b[33m✗ outdated\x1b[0m",
-            "\x1b[33m○ not activated\x1b[0m",
-            "\x1b[31m! eval failed\x1b[0m",
-            "\x1b[31m! probe failed\x1b[0m",
-            "\x1b[35m? unreachable\x1b[0m",
-            "\x1b[2m– offline\x1b[0m",
-            "\x1b[36m… evaluating 12s\x1b[0m",
+            "\x1b[32m✓\x1b[0m bigmem •       \x1b[32mup to date\x1b[0m",
+            "\x1b[33m✗\x1b[0m al2-aarch64    \x1b[33moutdated\x1b[0m",
+            "\x1b[33m○\x1b[0m al2-x86_64     \x1b[33mnot activated\x1b[0m",
+            "\x1b[31m!\x1b[0m ci             \x1b[31meval failed\x1b[0m",
+            "\x1b[31m!\x1b[0m web2           \x1b[31mprobe failed\x1b[0m",
+            "\x1b[35m?\x1b[0m web1           \x1b[35munreachable\x1b[0m",
+            "\x1b[2m–\x1b[0m mac-m1         \x1b[2moffline\x1b[0m",
+            "\x1b[36m…\x1b[0m al2023-x86_64  \x1b[36mevaluating 12s\x1b[0m",
+            "\x1b[34m↑\x1b[0m tryout         \x1b[34mahead\x1b[0m",
             "\x1b[1mgithub:jjant/nix-config\x1b[0m",
         ] {
             assert!(
@@ -1596,13 +1600,13 @@ update: hostctl activate al2-aarch64 al2-x86_64
         );
         let table = sim.table(NO_COLOR, None);
         insta::assert_snapshot!("status_pending", table);
-        assert!(table.contains("… probing 20s"), "{table}");
+        assert!(table.contains("… a  probing 20s"), "{table}");
         assert!(
-            table.contains("… probing\n"),
+            table.contains("… b  probing\n"),
             "under a second: no timer\n{table}"
         );
-        assert!(table.contains("… evaluating 19s"), "{table}");
-        assert!(table.contains("… waiting"), "{table}");
+        assert!(table.contains("… c  evaluating 19s"), "{table}");
+        assert!(table.contains("… d  waiting"), "{table}");
         assert!(table.contains("· resolving…"), "{table}");
     }
 
@@ -1634,7 +1638,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
         let table = sim.table(NO_COLOR, None);
         insta::assert_snapshot!("status_interrupted", table);
         assert!(!table.contains("resolving"), "{table}");
-        assert!(table.contains("… interrupted"), "{table}");
+        assert!(table.contains("… a  interrupted"), "{table}");
     }
 
     // Host ids of `drift_fleet`.

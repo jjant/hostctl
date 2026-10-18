@@ -4,8 +4,8 @@ expression: table
 ---
 github:jjant/nix-config · resolving…
 
-  a  … probing 20s
-  b  … probing
-  c  … evaluating 19s
-  d  … waiting
-  e  ✗ outdated
+  … a  probing 20s
+  … b  probing
+  … c  evaluating 19s
+  … d  waiting
+  ✗ e  outdated

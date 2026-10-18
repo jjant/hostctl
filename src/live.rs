@@ -1628,7 +1628,7 @@ mod tests {
         assert!(vt.scrollback.is_empty(), "{:?}", vt.scrollback);
         // It was redrawn along the way, not printed once.
         assert!(term.out.matches("A\x1b[K").count() > 3, "{:?}", term.out);
-        assert_eq!(table.matches("✓ up to date").count(), 2, "{table}");
+        assert_eq!(table.matches("up to date").count(), 2, "{table}");
     }
 
     #[tokio::test(start_paused = true)]

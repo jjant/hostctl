@@ -4,10 +4,10 @@ expression: "sim.table(NO_COLOR, Some(40))"
 ---
 github:jjant/nix-config @ 42ea902 (2h a…
 
-  mäc-mini   ✗ outdated
-  zürich     ✓ up to date
-  東京-desk  ✗ outdated  会議室の横の机…
-  ñandú •    ✓ up to date
-  🍎-air     ✗ outdated
+  ✗ mäc-mini   outdated
+  ✓ zürich     up to date
+  ✗ 東京-desk  outdated  会議室の横の机…
+  ✓ ñandú •    up to date
+  ✗ 🍎-air     outdated
 
 update: hostctl activate 'mäc-mini' '東…

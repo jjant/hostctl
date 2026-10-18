@@ -4,6 +4,6 @@ expression: table
 ---
 github:jjant/nix-config
 
-  a  … interrupted
-  b  … interrupted
-  c  … interrupted
+  … a  interrupted
+  … b  interrupted
+  … c  interrupted

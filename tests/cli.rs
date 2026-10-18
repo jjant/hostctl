@@ -38,8 +38,8 @@ fn everything_up_to_date_exits_0() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date\
-         \n  web2  ✓ up to date\n"
+         \n  ✓ web1  up to date\
+         \n  ✓ web2  up to date\n"
     );
     assert_eq!(run.stderr, "");
 }
@@ -59,9 +59,9 @@ fn outdated_and_never_activated_hosts_exit_1() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date\
-         \n  web2  ✗ outdated\
-         \n  web3  ○ not activated  no home-manager profile\n\
+         \n  ✓ web1  up to date\
+         \n  ✗ web2  outdated\
+         \n  ○ web3  not activated  no home-manager profile\n\
          \nupdate: hostctl activate web2 web3\n"
     );
 }
@@ -127,7 +127,7 @@ fn without_a_command_or_a_terminal_hostctl_prints_the_status() {
     let default = w.run(&[]);
     default.code(1);
     assert_eq!(default.stdout, plain.stdout);
-    assert!(default.stdout.contains("web1  ✗ outdated"), "{default}");
+    assert!(default.stdout.contains("✗ web1  outdated"), "{default}");
 }
 
 #[test]
@@ -143,11 +143,11 @@ fn an_unreachable_host_exits_2() {
     run.code(2);
     assert!(
         run.stdout.contains(
-            "\n  web2  ? unreachable  ssh: connect to host web2 port 22: Connection refused\n"
+            "\n  ? web2  unreachable  ssh: connect to host web2 port 22: Connection refused\n"
         ),
         "{run}"
     );
-    assert!(run.stdout.contains("\n  web1  ✓ up to date\n"), "{run}");
+    assert!(run.stdout.contains("\n  ✓ web1  up to date\n"), "{run}");
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn trouble_wins_over_outdated() {
     // The hint goes to the details (JSON), not the table.
     assert!(
         run.stdout
-            .contains("  web2  ? unreachable  ssh: Could not resolve hostname web2: Name or service not known\n"),
+            .contains("  ? web2  unreachable  ssh: Could not resolve hostname web2: Name or service not known\n"),
         "{run}"
     );
     let json = w.run(&["status", "--json"]).json();
@@ -188,7 +188,7 @@ fn an_unusable_answer_is_a_failed_probe_and_exits_2() {
     run.code(2);
     assert!(
         run.stdout
-            .contains("  web1  ! probe failed  unexpected output: \"Welcome to web1!\"\n"),
+            .contains("  ! web1  probe failed  unexpected output: \"Welcome to web1!\"\n"),
         "{run}"
     );
 }
@@ -210,7 +210,7 @@ fn a_configuration_that_does_not_evaluate_exits_2() {
     run.code(2);
     assert!(
         run.stdout
-            .contains("  web2  ! eval failed  attribute 'web2' missing\n"),
+            .contains("  ! web2  eval failed  attribute 'web2' missing\n"),
         "{run}"
     );
     let json = w.run(&["status", "--json", "--no-cache"]).json();
@@ -249,7 +249,7 @@ fn a_stale_flake_exits_2() {
         ),
         "{run}"
     );
-    assert!(run.stdout.contains("  web1  ✓ up to date"), "{run}");
+    assert!(run.stdout.contains("  ✓ web1  up to date"), "{run}");
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn a_flake_that_can_t_be_refreshed_falls_back_to_its_last_resolution() {
         ),
         "{run}"
     );
-    assert!(run.stdout.contains("  web1  ✓ up to date"), "{run}");
+    assert!(run.stdout.contains("  ✓ web1  up to date"), "{run}");
 }
 
 #[test]
@@ -548,8 +548,8 @@ fn an_ssh_that_can_t_be_run_is_reported_once() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ? unreachable  ssh couldn't be run\
-         \n  web2  ? unreachable  ssh couldn't be run\n\
+         \n  ? web1  unreachable  ssh couldn't be run\
+         \n  ? web2  unreachable  ssh couldn't be run\n\
          \nerror: ssh.command = \"/nonexistent/ssh\" could not be run: No such file or directory \
          (os error 2); is OpenSSH installed and on PATH?\n"
     );
@@ -570,7 +570,7 @@ fn colors_only_when_asked_for_without_a_terminal() {
     assert!(
         always
             .stdout
-            .contains("  web1  \x1b[32m✓ up to date\x1b[0m\n"),
+            .contains("  \x1b[32m✓\x1b[0m web1  \x1b[32mup to date\x1b[0m\n"),
         "{always:?}"
     );
 }
@@ -627,7 +627,7 @@ fn an_interrupted_check_exits_130() {
         interrupted.elapsed() < Duration::from_secs(20),
         "the sleeping evaluation was killed"
     );
-    assert!(run.stdout.contains("  web1  … interrupted\n"), "{run}");
+    assert!(run.stdout.contains("  … web1  interrupted\n"), "{run}");
     let eval = &w.evals()[0];
     assert_eq!(eval.end, None, "the evaluation was killed: {}", w.log());
 }
@@ -702,7 +702,7 @@ fn quitting_with_ctrl_backslash_is_an_interruption_too() {
     let run = finish(child);
     // Not a core dump: the partial table, exit 130, the evaluation killed.
     run.code(130);
-    assert!(run.stdout.contains("  web1  … interrupted\n"), "{run}");
+    assert!(run.stdout.contains("  … web1  interrupted\n"), "{run}");
     let eval = &w.evals()[0];
     assert_eq!(eval.end, None, "the evaluation was killed: {}", w.log());
 }
@@ -971,8 +971,8 @@ fn probes_start_while_the_flake_resolves_when_its_hosts_are_known() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date\
-         \n  web2  ✓ up to date\n"
+         \n  ✓ web1  up to date\
+         \n  ✓ web2  up to date\n"
     );
 }
 
@@ -994,8 +994,8 @@ fn hosts_the_flake_no_longer_has_are_dropped_once_it_resolved() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 2222222 (2h ago)\n\
-         \n  web1  ✓ up to date\
-         \n  web3  ✗ outdated\n\
+         \n  ✓ web1  up to date\
+         \n  ✗ web3  outdated\n\
          \nupdate: hostctl activate web3\n"
     );
     assert_eq!(w.resolutions().len(), 2, "one per run:\n{}", w.log());
@@ -1069,8 +1069,8 @@ fn hosts_with_the_same_attribute_share_one_evaluation() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  kiosk1  ✓ up to date\
-         \n  kiosk2  ✓ up to date\n"
+         \n  ✓ kiosk1  up to date\
+         \n  ✓ kiosk2  up to date\n"
     );
     assert_eq!(w.evals().len(), 1, "{}", w.log());
 }
@@ -1214,10 +1214,10 @@ fn offline_evaluates_nothing_the_cache_lacks() {
     run.code(2);
     assert!(
         run.stdout
-            .contains("\n  web2  ! eval failed  not cached; run hostctl once without --offline\n"),
+            .contains("\n  ! web2  eval failed  not cached; run hostctl once without --offline\n"),
         "{run}"
     );
-    assert!(run.stdout.contains("\n  web1  ✓ up to date\n"), "{run}");
+    assert!(run.stdout.contains("\n  ✓ web1  up to date\n"), "{run}");
     assert!(w.evals().is_empty(), "no evaluation:\n{}", w.log());
 
     // Nor are the hosts of another inventory attribute.
@@ -1254,8 +1254,8 @@ fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ↑ ahead  on feat/x (2222222, 1h newer)\
-         \n  web2  ✗ outdated\n\
+         \n  ↑ web1  ahead  on feat/x (2222222, 1h newer)\
+         \n  ✗ web2  outdated\n\
          \nupdate: hostctl activate web2\n"
     );
     let lookups = || w.nix_calls(&format!("{FLAKE}/{REV2}"));
@@ -1305,7 +1305,7 @@ fn the_cache_remembers_which_revision_a_host_runs() {
     );
     assert!(
         run.stdout
-            .contains("\n  web1  ✗ outdated  on 1111111 (2h old)\n"),
+            .contains("\n  ✗ web1  outdated  on 1111111 (2h old)\n"),
         "{run}"
     );
     let json = w.run(&["status", "--json"]).json();
@@ -1398,10 +1398,10 @@ fn checks_reach_hosts_the_way_the_layers_say() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  jj@desk  ✓ up to date\
-         \n  mac      ✓ up to date\
-         \n  printer  ✓ up to date\
-         \n  web1     ✓ up to date  the web server\n"
+         \n  ✓ jj@desk  up to date\
+         \n  ✓ mac      up to date\
+         \n  ✓ printer  up to date\
+         \n  ✓ web1     up to date  the web server\n"
     );
     assert_eq!(
         run.stderr,
@@ -1448,8 +1448,8 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date\
-         \n  web2  ✓ up to date\n"
+         \n  ✓ web1  up to date\
+         \n  ✓ web2  up to date\n"
     );
     let probed: Vec<String> = w
         .calls()
@@ -1467,7 +1467,7 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  bigmem •  ✓ up to date\n"
+         \n  ✓ bigmem •  up to date\n"
     );
     assert!(w.calls().iter().all(|c| c.tool == "nix"), "{}", w.log());
 
@@ -1500,7 +1500,7 @@ fn on_a_mac_the_darwin_host_behind_a_tunnel_is_assumed_to_be_this_machine() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  mac •?  ✓ up to date\n"
+         \n  ✓ mac •?  up to date\n"
     );
     assert!(
         w.calls().iter().all(|c| c.tool == "nix"),
@@ -1529,8 +1529,8 @@ fn an_unreachable_optional_host_is_offline_and_exits_0() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  mac   – offline  reachable from the desk only\
-         \n  web1  ✓ up to date\n"
+         \n  – mac   offline  reachable from the desk only\
+         \n  ✓ web1  up to date\n"
     );
 }
 
@@ -1568,9 +1568,9 @@ fn forced_command_routes_send_their_command() {
     assert_eq!(
         run.stdout,
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  air   ✗ outdated      on 2222222\
-         \n  mac   ✓ up to date\
-         \n  mini  ! probe failed  mac-open-recv: unknown mode\n"
+         \n  ✗ air   outdated      on 2222222\
+         \n  ✓ mac   up to date\
+         \n  ! mini  probe failed  mac-open-recv: unknown mode\n"
     );
     for (destination, end) in [
         ("jj@localhost", " -p 2022 -- jj@localhost current-system"),
@@ -1614,7 +1614,7 @@ fn a_probe_that_times_out_is_unreachable() {
     );
     assert!(
         run.stdout
-            .contains("\n  web1  ? unreachable  timed out after 1s\n"),
+            .contains("\n  ? web1  unreachable  timed out after 1s\n"),
         "{run}"
     );
     let calls = w.ssh_calls("web1");
@@ -1634,7 +1634,7 @@ fn a_silent_ssh_failure_is_retried_without_multiplexing() {
     run.code(2);
     assert!(
         run.stdout.contains(
-            "\n  web1  ? unreachable  ssh: connect to host web1 port 22: Connection refused\n"
+            "\n  ? web1  unreachable  ssh: connect to host web1 port 22: Connection refused\n"
         ),
         "the reason the retry captured: {run}"
     );
@@ -1674,7 +1674,7 @@ fn a_proxy_failure_the_master_hides_is_retried_without_multiplexing() {
     run.code(2);
     assert!(
         run.stdout.contains(
-            "\n  web1  ? unreachable  ssh: Could not resolve hostname jump: Name or service not known\n"
+            "\n  ? web1  unreachable  ssh: Could not resolve hostname jump: Name or service not known\n"
         ),
         "the reason the retry captured: {run}"
     );
@@ -1916,7 +1916,7 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
         run.stdout,
         format!(
             "github:o/r @ 1111111 (2h ago)\n\
-             \n  web1  ✗ outdated\n\
+             \n  ✗ web1  outdated\n\
              \nupdate: hostctl activate web1\n\
              \nweb1: {command}\n  runs on web1\n\
              \n==> activating web1 on web1\n\
