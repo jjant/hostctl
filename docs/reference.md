@@ -58,7 +58,7 @@ and `status --json` has every host's (`activate.command`).
 
 ## Statuses
 
-From most to least urgent (the order `s` sorts by):
+From most to least urgent:
 
 | status          | icon | meaning                                                                                     | exit |
 | --------------- | ---- | ------------------------------------------------------------------------------------------- | ---- |

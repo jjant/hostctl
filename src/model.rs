@@ -159,8 +159,7 @@ impl<T> Slot<T> {
     }
 }
 
-/// A host's status. Declared from most to least urgent, which is the order
-/// "sort by status" uses.
+/// A host's status, declared from most to least urgent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
@@ -263,7 +262,7 @@ pub struct HostState {
     pub host: Host,
     pub probe: Slot<ProbeResult>,
     pub eval: Slot<EvalResult>,
-    /// On demand (`d`).
+    /// On demand (`hostctl diff`).
     pub diff: Slot<DiffResult>,
     /// The `(current, desired)` the running/last diff was computed for.
     pub diff_inputs: Option<(StorePath, StorePath)>,
