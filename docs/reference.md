@@ -87,8 +87,9 @@ or remembered by hostctl from an earlier check), `on <rev> (<age> newer)` for
 an ahead host, `same rev, different build`
 (activated from a reference without `rev`, or with overridden inputs), `staged`
 (the profile already points at the desired generation; a switch or reboot is
-pending) or `unknown generation` (not built from a revision hostctl has
-checked, such as a local checkout or another branch). Badges: `⟳ reboot` (a
+pending) or nothing when the revision is unknown (the generation doesn't
+record it and hostctl hasn't evaluated one that builds it: a local checkout,
+another branch). Badges: `⟳ reboot` (a
 NixOS host booted another kernel, initrd or modules than it runs) and
 `specialisation <name>`.
 

@@ -260,7 +260,7 @@ fn a_real_flake_against_a_real_profile() {
     let second = run(&["status", "--plain"]);
     second.code(0);
     assert!(
-        second.stdout.contains("\n  box •  ✓ up to date  gen 1 · "),
+        second.stdout.contains("\n  box •  ✓ up to date\n"),
         "{second}"
     );
     assert_eq!(
@@ -274,12 +274,7 @@ fn a_real_flake_against_a_real_profile() {
     set_profile(&profile_link, 2, &generations[1]);
     let third = run(&["status", "--plain"]);
     third.code(1);
-    assert!(
-        third
-            .stdout
-            .contains("\n  box •  ✗ outdated  gen 2 · just now · unknown generation\n"),
-        "{third}"
-    );
+    assert!(third.stdout.contains("\n  box •  ✗ outdated\n"), "{third}");
 
     assert!(!flake.join("flake.lock").exists(), "no lock file written");
     assert_eq!(snapshot(&flake), untouched, "the flake directory changed");

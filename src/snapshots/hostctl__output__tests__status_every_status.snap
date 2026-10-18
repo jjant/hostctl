@@ -4,16 +4,16 @@ expression: "sim.table(NO_COLOR, None)"
 ---
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  al2-aarch64    ✗ outdated       gen 93 · 4mo ago · on 1a2b3c4 (4mo old)
+  al2-aarch64    ✗ outdated       on 1a2b3c4 (4mo old)
   al2-x86_64     ○ not activated  no home-manager profile
   al2023-x86_64  … evaluating 12s
-  bigmem •       ✓ up to date     gen 9 · 12m ago
+  bigmem •       ✓ up to date
   ci             ! eval failed    attribute 'ci' missing
   mac-m1         – offline        reachable only from a desk you ssh into from the Mac
   new-box        … waiting
   web1           ? unreachable    ssh: Could not resolve hostname web1: Name or service not known
   web2           ! probe failed   connection dropped / timed out after connecting
-  tryout         ↑ ahead          gen 12 · 20m ago · on 9b8a7c6 (3h newer)
+  tryout         ↑ ahead          on 9b8a7c6 (3h newer)
 
 1 eval failed · 1 probe failed · 1 unreachable · 1 outdated · 1 not activated · 2 pending · 1 offline · 1 ahead · 1 up to date · • this machine
 update: hostctl activate al2-aarch64 al2-x86_64

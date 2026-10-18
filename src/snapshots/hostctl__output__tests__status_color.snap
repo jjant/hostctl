@@ -4,16 +4,16 @@ expression: visible_escapes(&colored)
 ---
 ␛[1mgithub:jjant/nix-config␛[0m @ 42ea902␛[2m (2h ago)␛[0m
 
-  al2-aarch64    ␛[33m✗ outdated␛[0m       ␛[2mgen 93 · 4mo ago · on 1a2b3c4 (4mo old)␛[0m
+  al2-aarch64    ␛[33m✗ outdated␛[0m       ␛[2mon 1a2b3c4 (4mo old)␛[0m
   al2-x86_64     ␛[33m○ not activated␛[0m  ␛[2mno home-manager profile␛[0m
   al2023-x86_64  ␛[36m… evaluating 12s␛[0m
-  bigmem •       ␛[32m✓ up to date␛[0m     ␛[2mgen 9 · 12m ago␛[0m
+  bigmem •       ␛[32m✓ up to date␛[0m
   ci             ␛[31m! eval failed␛[0m    ␛[2mattribute 'ci' missing␛[0m
   mac-m1         ␛[2m– offline␛[0m        ␛[2mreachable only from a desk you ssh into from the Mac␛[0m
   new-box        ␛[36m… waiting␛[0m
   web1           ␛[35m? unreachable␛[0m    ␛[2mssh: Could not resolve hostname web1: Name or service not known␛[0m
   web2           ␛[31m! probe failed␛[0m   ␛[2mconnection dropped / timed out after connecting␛[0m
-  tryout         ␛[34m↑ ahead␛[0m          ␛[2mgen 12 · 20m ago · on 9b8a7c6 (3h newer)␛[0m
+  tryout         ␛[34m↑ ahead␛[0m          ␛[2mon 9b8a7c6 (3h newer)␛[0m
 
 ␛[2m1 eval failed · 1 probe failed · 1 unreachable · 1 outdated · 1 not activated · 2 pending · 1 offline · 1 ahead · 1 up to date · • this machine␛[0m
 ␛[2mupdate:␛[0m hostctl activate al2-aarch64 al2-x86_64

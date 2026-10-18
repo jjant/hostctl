@@ -7,8 +7,8 @@ git+file:///tmp/hostctl-ifd @ a8f62b6-dirty (2h ago)
 sourcehut:~jj/lab · resolving…
 github:jjant/work-config: unable to download 'https://api.github.com/repos/jjant/work-config/commits/HEAD': HTTP error 404
 
-  bigmem     ✓ up to date   gen 9 · 12m ago
-  scratch    ✗ outdated     gen 2 · 5m ago · unknown generation
+  bigmem     ✓ up to date
+  scratch    ✗ outdated
   lab        … waiting
   work-desk  ! eval failed  unable to download 'https://api.github.com/repos/jjant/work-config/commits/HEAD': HTTP error 404
 

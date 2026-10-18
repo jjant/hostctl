@@ -1255,6 +1255,8 @@ mod tests {
 
     /// The rows `text` (narrow characters only) takes on a terminal `cols`
     /// wide: long lines wrap.
+    /// `text` wrapped at `cols` like [`Vt::screen`] shows it (trailing
+    /// spaces trimmed).
     fn wrapped(text: &str, cols: usize) -> Vec<String> {
         text.lines()
             .flat_map(|line| {
@@ -1262,7 +1264,10 @@ mod tests {
                 if chars.is_empty() {
                     return vec![String::new()];
                 }
-                chars.chunks(cols).map(|row| row.iter().collect()).collect()
+                chars
+                    .chunks(cols)
+                    .map(|row| row.iter().collect::<String>().trim_end().to_string())
+                    .collect()
             })
             .collect()
     }

@@ -54,9 +54,9 @@ const CYAN: &str = "36";
 /// ```text
 /// github:jjant/nix-config @ 42ea902 (2h ago)
 ///
-///   al2-aarch64  ✗ outdated       gen 93 · 4mo ago · on 1a2b3c4 (4mo old)
+///   al2-aarch64  ✗ outdated       on 1a2b3c4 (4mo old)
 ///   al2-x86_64   ○ not activated  no home-manager profile
-///   bigmem •     ✓ up to date     gen 9 · 12m ago
+///   bigmem •     ✓ up to date
 ///   mac-m1       – offline        reachable only from a desk you ssh into from the Mac
 ///
 /// 1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 3.4s
@@ -69,11 +69,10 @@ const CYAN: &str = "36";
 /// - one row per host in state order: name (+ ` •` when local, ` •?` when
 ///   assumed local), `icon label` (pending rows show their activity and
 ///   elapsed time, e.g. `… evaluating 3s`, or `… interrupted`), detail:
-///   up-to-date/outdated/ahead →
-///   `gen N · <activated age>` plus the drift (`on <rev7> (<age> old)`,
-///   `on <rev7> (<age> newer)`, `same rev, different build`, `staged:
-///   switch/reboot pending`, `unknown generation`) and badges (`⟳ reboot`,
-///   `specialisation X`);
+///   up-to-date/outdated/ahead → the drift (`on <rev7> (<age> old)`, `on
+///   <branch> (<rev7>, <age> newer)`, `same rev, different build`, `staged:
+///   switch/reboot pending`; nothing when the revision is unknown) and
+///   badges (`⟳ reboot`, `specialisation X`);
 ///   not activated → the reason; failures → the error summary (offline:
 ///   only without a note); then the host's `note`, if any;
 /// - columns aligned by display width; with `width`, every line is cut with
@@ -247,16 +246,8 @@ fn detail(h: &HostState, status: Status, now_unix: i64) -> String {
     let report = h.report();
     match status {
         Status::UpToDate | Status::Outdated | Status::Ahead => {
-            if let Some(r) = report {
-                if let Some(generation) = r.generation {
-                    item(&mut out, format_args!("gen {generation}"));
-                }
-                if let Some(at) = r.activated {
-                    item(&mut out, format_ago(at, now_unix));
-                }
-            }
-            if let Some(drift) = h.drift() {
-                item(&mut out, drift_text(&drift, now_unix));
+            if let Some(text) = h.drift().and_then(|drift| drift_text(&drift, now_unix)) {
+                item(&mut out, text);
             }
             if let Some(r) = report {
                 if r.reboot_required {
@@ -298,11 +289,13 @@ fn detail(h: &HostState, status: Status, now_unix: i64) -> String {
     out
 }
 
-fn drift_text(drift: &Drift, now_unix: i64) -> Cow<'static, str> {
-    match drift {
+/// What the detail cell says about `drift`: nothing when the revision a
+/// host runs is unknown.
+fn drift_text(drift: &Drift, now_unix: i64) -> Option<Cow<'static, str>> {
+    Some(match drift {
         Drift::Staged => "staged: switch/reboot pending".into(),
         Drift::SameRevision => "same rev, different build".into(),
-        Drift::Unknown => "unknown generation".into(),
+        Drift::Unknown => return None,
         Drift::Revision {
             rev,
             last_modified,
@@ -324,7 +317,7 @@ fn drift_text(drift: &Drift, now_unix: i64) -> Cow<'static, str> {
             }
             .into()
         }
-    }
+    })
 }
 
 /// A revision cut to 7 characters, keeping a `-dirty` suffix.
@@ -1467,9 +1460,9 @@ mod tests {
         let doc = "\
 github:jjant/nix-config @ 42ea902 (2h ago)
 
-  al2-aarch64  ✗ outdated       gen 93 · 4mo ago · on 1a2b3c4 (4mo old)
+  al2-aarch64  ✗ outdated       on 1a2b3c4 (4mo old)
   al2-x86_64   ○ not activated  no home-manager profile
-  bigmem •     ✓ up to date     gen 9 · 12m ago
+  bigmem •     ✓ up to date
   mac-m1       – offline        reachable only from a desk you ssh into from the Mac
 
 1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 3.4s

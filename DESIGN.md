@@ -46,8 +46,9 @@ revision known from the generation itself — `configurationRevision` — or fro
 hostctl's cache), `same rev, different build` (revision equal, paths differ:
 activated from a flake reference without `rev`, or with overridden inputs),
 `staged` (the profile already points at the desired generation; switch/reboot
-pending), or `unknown generation` (not built from a revision hostctl has
-checked: a local checkout, another branch). Badges: `⟳ reboot` (NixOS booted
+pending), or nothing when the revision is unknown (the generation doesn't record
+it and hostctl hasn't evaluated one that builds it: a local checkout, another
+branch); the JSON says `unknown`. Badges: `⟳ reboot` (NixOS booted
 kernel/initrd/modules differ), `specialisation <name>`.
 
 **Ahead** (`on <rev> (<age> newer)`): the generation itself records a revision

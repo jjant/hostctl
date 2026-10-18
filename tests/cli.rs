@@ -43,8 +43,8 @@ fn everything_up_to_date_exits_0() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date  gen 5 · 3d ago\
-         \n  web2  ✓ up to date  gen 5 · 3d ago\n\
+         \n  web1  ✓ up to date\
+         \n  web2  ✓ up to date\n\
          \n2 up to date · <took>\n"
     );
     assert_eq!(run.stderr, "");
@@ -65,8 +65,8 @@ fn outdated_and_never_activated_hosts_exit_1() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date     gen 5 · 3d ago\
-         \n  web2  ✗ outdated       gen 5 · 3d ago · unknown generation\
+         \n  web1  ✓ up to date\
+         \n  web2  ✗ outdated\
          \n  web3  ○ not activated  no home-manager profile\n\
          \n1 outdated · 1 not activated · 1 up to date · <took>\
          \nupdate: hostctl activate web2 web3\n"
@@ -581,7 +581,7 @@ fn colors_only_when_asked_for_without_a_terminal() {
     assert!(
         always
             .stdout
-            .contains("  web1  \x1b[32m✓ up to date\x1b[0m  \x1b[2mgen 5 · 3d ago\x1b[0m\n"),
+            .contains("  web1  \x1b[32m✓ up to date\x1b[0m\n"),
         "{always:?}"
     );
 }
@@ -999,8 +999,8 @@ fn probes_start_while_the_flake_resolves_when_its_hosts_are_known() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date  gen 5 · 3d ago\
-         \n  web2  ✓ up to date  gen 5 · 3d ago\n\
+         \n  web1  ✓ up to date\
+         \n  web2  ✓ up to date\n\
          \n2 up to date · <took>\n"
     );
     // The time it took counts from the start: the resolution included.
@@ -1025,8 +1025,8 @@ fn hosts_the_flake_no_longer_has_are_dropped_once_it_resolved() {
     assert_eq!(
         table(&run),
         "github:o/r @ 2222222 (2h ago)\n\
-         \n  web1  ✓ up to date  gen 5 · 3d ago\
-         \n  web3  ✗ outdated    gen 5 · 3d ago · unknown generation\n\
+         \n  web1  ✓ up to date\
+         \n  web3  ✗ outdated\n\
          \n1 outdated · 1 up to date · <took>\
          \nupdate: hostctl activate web3\n"
     );
@@ -1101,8 +1101,8 @@ fn hosts_with_the_same_attribute_share_one_evaluation() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  kiosk1  ✓ up to date  gen 2 · 3d ago\
-         \n  kiosk2  ✓ up to date  gen 4 · 3d ago\n\
+         \n  kiosk1  ✓ up to date\
+         \n  kiosk2  ✓ up to date\n\
          \n2 up to date · <took>\n"
     );
     assert_eq!(w.evals().len(), 1, "{}", w.log());
@@ -1250,7 +1250,7 @@ fn offline_evaluates_nothing_the_cache_lacks() {
             .contains("\n  web2  ! eval failed  not cached; run hostctl once without --offline\n"),
         "{run}"
     );
-    assert!(run.stdout.contains("\n  web1  ✓ up to date  "), "{run}");
+    assert!(run.stdout.contains("\n  web1  ✓ up to date\n"), "{run}");
     assert!(w.evals().is_empty(), "no evaluation:\n{}", w.log());
 
     // Nor are the hosts of another inventory attribute.
@@ -1287,8 +1287,8 @@ fn a_host_on_a_newer_commit_is_ahead_and_left_out_of_the_update() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ↑ ahead     gen 5 · 3d ago · on feat/x (2222222, 1h newer)\
-         \n  web2  ✗ outdated  gen 5 · 3d ago · unknown generation\n\
+         \n  web1  ↑ ahead  on feat/x (2222222, 1h newer)\
+         \n  web2  ✗ outdated\n\
          \n1 outdated · 1 ahead · <took>\nupdate: hostctl activate web2\n"
     );
     let lookups = || w.nix_calls(&format!("{FLAKE}/{REV2}"));
@@ -1338,7 +1338,7 @@ fn the_cache_remembers_which_revision_a_host_runs() {
     );
     assert!(
         run.stdout
-            .contains("\n  web1  ✗ outdated  gen 5 · 3d ago · on 1111111 (2h old)\n"),
+            .contains("\n  web1  ✗ outdated  on 1111111 (2h old)\n"),
         "{run}"
     );
     let json = w.run(&["status", "--json"]).json();
@@ -1431,10 +1431,10 @@ fn checks_reach_hosts_the_way_the_layers_say() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  jj@desk  ✓ up to date  gen 8 · 3d ago\
+         \n  jj@desk  ✓ up to date\
          \n  mac      ✓ up to date\
-         \n  printer  ✓ up to date  gen 3 · 3d ago\
-         \n  web1     ✓ up to date  gen 41 · 3d ago · the web server\n\
+         \n  printer  ✓ up to date\
+         \n  web1     ✓ up to date  the web server\n\
          \n4 up to date · <took>\n"
     );
     assert_eq!(
@@ -1482,8 +1482,8 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  web1  ✓ up to date  gen 5 · 3d ago\
-         \n  web2  ✓ up to date  gen 5 · 3d ago\n\
+         \n  web1  ✓ up to date\
+         \n  web2  ✓ up to date\n\
          \n2 up to date · <took>\n"
     );
     let probed: Vec<String> = w
@@ -1502,7 +1502,7 @@ fn patterns_pick_hosts_by_name_or_this_machine() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  bigmem •  ✓ up to date  gen 9 · 3d ago\n\
+         \n  bigmem •  ✓ up to date\n\
          \n1 up to date · • this machine · <took>\n"
     );
     assert!(w.calls().iter().all(|c| c.tool == "nix"), "{}", w.log());
@@ -1536,7 +1536,7 @@ fn on_a_mac_the_darwin_host_behind_a_tunnel_is_assumed_to_be_this_machine() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  mac •?  ✓ up to date  gen 7 · 3d ago\n\
+         \n  mac •?  ✓ up to date\n\
          \n1 up to date · •? this machine (assumed) · <took>\n"
     );
     assert!(
@@ -1566,8 +1566,8 @@ fn an_unreachable_optional_host_is_offline_and_exits_0() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  mac   – offline     reachable from the desk only\
-         \n  web1  ✓ up to date  gen 5 · 3d ago\n\
+         \n  mac   – offline  reachable from the desk only\
+         \n  web1  ✓ up to date\n\
          \n1 offline · 1 up to date · <took>\n"
     );
 }
@@ -1606,7 +1606,7 @@ fn forced_command_routes_send_their_command() {
     assert_eq!(
         table(&run),
         "github:o/r @ 1111111 (2h ago)\n\
-         \n  air   ✗ outdated      gen 12 · on 2222222\
+         \n  air   ✗ outdated      on 2222222\
          \n  mac   ✓ up to date\
          \n  mini  ! probe failed  mac-open-recv: unknown mode\n\
          \n1 probe failed · 1 outdated · 1 up to date · <took>\n"
@@ -1955,7 +1955,7 @@ fn activate_runs_the_command_on_the_host_and_checks_it_again() {
         masked(&run.stdout),
         format!(
             "github:o/r @ 1111111 (2h ago)\n\
-             \n  web1  ✗ outdated  gen 5 · 3d ago · unknown generation\n\
+             \n  web1  ✗ outdated\n\
              \n1 outdated · <took>\
              \nupdate: hostctl activate web1\n\
              \nweb1: {command}\n  runs on web1\n\

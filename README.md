@@ -22,9 +22,9 @@ hosts answer):
 $ hostctl status
 github:you/nix-config @ 42ea902 (2h ago)
 
-  desk •  ✗ outdated       gen 59 · 3d ago · on 1a2b3c4 (3d old)
+  desk •  ✗ outdated       on 1a2b3c4 (3d old)
   laptop  – offline        reachable from the desk only
-  nas     ✓ up to date     gen 112 · 3d ago
+  nas     ✓ up to date
   work    ○ not activated  no home-manager profile
 
 1 outdated · 1 not activated · 1 offline · 1 up to date · • this machine · 17ms
