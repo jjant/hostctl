@@ -473,7 +473,7 @@ impl Engine {
             .map_err(|error| ErrorInfo::msg(self.ssh_spawn_message(&error)))?;
         let stderr = clean_ssh_stderr(&out.stderr);
         let failed = |summary: String| {
-            let hint = remote::ssh_hint(&out.stderr);
+            let hint = self.ssh_hint_for(&host.target, &out.stderr);
             ErrorInfo::new(summary, detail(&attempt.spec, &stderr, hint.as_deref()))
         };
         if !out.success() {
@@ -890,6 +890,18 @@ impl Engine {
         });
     }
 
+    /// [`remote::ssh_hint`] for a run on `target`: none for this machine,
+    /// and none that sends the user to an ssh config this ssh doesn't read.
+    fn ssh_hint_for(&self, target: &Target, stderr: &str) -> Option<String> {
+        match target {
+            Target::Ssh(t) => {
+                let args = t.options.iter().chain(&self.inner.config.ssh.options);
+                remote::ssh_hint(stderr, remote::reads_ssh_config(args))
+            }
+            Target::Local { .. } => None,
+        }
+    }
+
     /// DESIGN.md ("Probing"): a complete answer counts whatever the exit
     /// code; an answer cut short is `Failed`; no output at all after a
     /// spawn error, ssh's exit 255 or a timeout is `Unreachable`; anything
@@ -924,7 +936,7 @@ impl Engine {
         };
         let stderr = clean_ssh_stderr(&out.stderr);
         let fail = |kind, summary: String| {
-            let hint = ssh_hint_for(&host.target, &out.stderr);
+            let hint = self.ssh_hint_for(&host.target, &out.stderr);
             Err(ProbeError {
                 kind,
                 error: ErrorInfo::new(summary, detail(&spec, &stderr, hint.as_deref())),
@@ -1036,7 +1048,7 @@ impl Engine {
         };
         let stderr = clean_ssh_stderr(&out.stderr);
         let failed = |summary: String| {
-            let hint = ssh_hint_for(target, &out.stderr);
+            let hint = self.ssh_hint_for(target, &out.stderr);
             ErrorInfo::new(summary, detail(spec, &stderr, hint.as_deref()))
         };
         if out.code == Some(127) && !out.timed_out {
@@ -1455,14 +1467,6 @@ fn retry_delay() -> Duration {
     let (min, max) = RETRY_DELAY_MS;
     let jitter = util::fnv1a64(probe::nonce().as_bytes()) % (max - min + 1);
     Duration::from_millis(min + jitter)
-}
-
-/// [`remote::ssh_hint`], for runs over ssh only.
-fn ssh_hint_for(target: &Target, stderr: &str) -> Option<String> {
-    match target {
-        Target::Ssh(_) => remote::ssh_hint(stderr),
-        Target::Local { .. } => None,
-    }
 }
 
 /// ssh's (or a remote command's) stderr without blank lines, `\r`, and

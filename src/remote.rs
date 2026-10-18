@@ -580,8 +580,10 @@ pub fn interactive_command(
 /// `Cannot execute command-line and remote command` → `RemoteCommand` in ssh
 /// config, add `-o RemoteCommand=none` to the host's `ssh-options`; an ssh
 /// older than 7.6 rejecting `accept-new` → a newer `ssh.command`). Only
-/// ssh's own messages count, not a remote command's.
-pub fn ssh_hint(stderr: &str) -> Option<String> {
+/// ssh's own messages count, not a remote command's. `reads_config`: whether
+/// that ssh read ~/.ssh/config ([`reads_ssh_config`]), so a hint may send
+/// the user there.
+pub fn ssh_hint(stderr: &str, reads_config: bool) -> Option<String> {
     let name = |prefix: &str, end: &str| {
         line_part(stderr, prefix, end).map(|name| crate::util::sanitize_terminal(name).into_owned())
     };
@@ -623,16 +625,24 @@ pub fn ssh_hint(stderr: &str) -> Option<String> {
         return Some(if stderr.contains("Temporary failure in name resolution") {
             format!("looking up {host} failed: check the network and DNS")
         } else {
+            let config = if reads_config {
+                " or give it a Host entry in ~/.ssh/config"
+            } else {
+                ""
+            };
             format!(
-                "{host} doesn't resolve: set the host's destination (e.g. user@{host}.example.com) or give it a Host entry in ~/.ssh/config"
+                "{host} doesn't resolve: set the host's destination (e.g. user@{host}.example.com){config}"
             )
         });
     }
     if stderr.contains("Too many authentication failures") {
-        return Some(
+        return Some(if reads_config {
             "the server stopped after too many keys: set IdentitiesOnly yes and the right IdentityFile for this host in ~/.ssh/config"
-                .into(),
-        );
+                .into()
+        } else {
+            r#"the server stopped after too many keys: give the host ssh-options = ["-o", "IdentitiesOnly=yes", "-i", "<its key>"]"#
+                .into()
+        });
     }
     if stderr.lines().any(is_auth_failure) {
         return Some(
@@ -641,6 +651,12 @@ pub fn ssh_hint(stderr: &str) -> Option<String> {
         );
     }
     None
+}
+
+/// Whether ssh run with these user arguments (a host's `ssh-options`, then
+/// `ssh.options`) reads ~/.ssh/config: not when they pass `-F`.
+pub fn reads_ssh_config<'a>(args: impl IntoIterator<Item = &'a String>) -> bool {
+    !args.into_iter().any(|arg| arg.starts_with("-F"))
 }
 
 /// The non-empty text between `prefix` and `end` on the line where `prefix`
@@ -1736,8 +1752,9 @@ Host key verification failed.
 
     #[test]
     fn hints_for_known_ssh_failures() {
-        let hint =
-            |stderr: &str| ssh_hint(stderr).unwrap_or_else(|| panic!("no hint for {stderr:?}"));
+        let hint = |stderr: &str| {
+            ssh_hint(stderr, true).unwrap_or_else(|| panic!("no hint for {stderr:?}"))
+        };
         for (stderr, host) in [(RESOLVE_LINUX, "bigmem2"), (RESOLVE_MAC, "mac-m1")] {
             let h = hint(stderr);
             assert!(
@@ -1786,15 +1803,35 @@ Host key verification failed.
             "bash: line 1: nix: command not found\n",
             "Permission denied (publickey) and more\n",
         ] {
-            assert_eq!(ssh_hint(stderr), None, "{stderr:?}");
+            assert_eq!(ssh_hint(stderr, true), None, "{stderr:?}");
         }
+    }
+
+    #[test]
+    fn hints_skip_the_ssh_config_ssh_doesnt_read() {
+        let hint = |stderr: &str| ssh_hint(stderr, false).unwrap();
+        let h = hint(RESOLVE_LINUX);
+        assert_eq!(
+            h,
+            "bigmem2 doesn't resolve: set the host's destination (e.g. user@bigmem2.example.com)"
+        );
+        let h = hint(TOO_MANY);
+        assert!(
+            h.contains(r#"ssh-options = ["-o", "IdentitiesOnly=yes", "-i""#)
+                && !h.contains("~/.ssh/config"),
+            "{h}"
+        );
+        let args = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert!(reads_ssh_config(&args(&["-o", "ForwardAgent=no"])));
+        assert!(!reads_ssh_config(&args(&["-F", "/dev/null"])));
+        assert!(!reads_ssh_config(&args(&["-o", "X=y", "-F/dev/null"])));
     }
 
     #[test]
     fn hints_sanitize_what_they_quote() {
         let stderr =
             "ssh: Could not resolve hostname evil\u{1b}]0;x\u{7}: Name or service not known\n";
-        let h = ssh_hint(stderr).unwrap();
+        let h = ssh_hint(stderr, true).unwrap();
         assert!(
             !h.contains('\u{1b}') && h.starts_with("evil\\u{1b}]0;x\\u{7}"),
             "{h}"

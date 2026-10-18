@@ -191,16 +191,16 @@ activate-on = "local"
 | `exclude`      | `[]`                     | globs of host names to drop (installer ISOs, CI configurations)                              |
 | `cache`        | `true`                   | reuse the results of unchanged flakes (`--no-cache`)                                         |
 
-| key                   | default | meaning                                                                                        |
-| --------------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `nix.command`         | `"nix"` | the nix executable                                                                             |
-| `nix.options`         | `[]`    | extra arguments for every nix invocation (`--impure` disables the cache; discovery stays pure) |
-| `nix.read-only`       | `true`  | evaluate with `--read-only` first (retried without it on import-from-derivation)               |
-| `nix.refresh`         | `"60s"` | re-resolve a flake's branch when the last resolution is older than this; `0` = on every check  |
-| `ssh.command`         | `"ssh"` | the ssh executable                                                                             |
-| `ssh.options`         | `[]`    | extra arguments for every ssh run; they win over hostctl's own                                 |
-| `ssh.persist`         | `"10m"` | lifetime of hostctl's private ControlMaster connections; `0` = no multiplexing                 |
-| `ui.refresh-interval` | `"0s"`  | dashboard auto-refresh; `0` = manual (`r`); for `github:` flakes, ≥ 60s is advised             |
+| key                   | default | meaning                                                                                                                  |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `nix.command`         | `"nix"` | the nix executable                                                                                                       |
+| `nix.options`         | `[]`    | extra arguments for every nix invocation (`--impure` disables the cache; discovery stays pure)                           |
+| `nix.read-only`       | `true`  | evaluate with `--read-only` first (retried without it on import-from-derivation)                                         |
+| `nix.refresh`         | `"60s"` | re-resolve a flake's branch when the last resolution is older than this; `0` = on every check                            |
+| `ssh.command`         | `"ssh"` | the ssh executable                                                                                                       |
+| `ssh.options`         | `[]`    | extra arguments for every ssh run; they win over hostctl's own (with `-F FILE`, ssh reads FILE instead of ~/.ssh/config) |
+| `ssh.persist`         | `"10m"` | lifetime of hostctl's private ControlMaster connections; `0` = no multiplexing                                           |
+| `ui.refresh-interval` | `"0s"`  | dashboard auto-refresh; `0` = manual (`r`); for `github:` flakes, ≥ 60s is advised                                       |
 
 ### Hosts
 
