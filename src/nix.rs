@@ -235,6 +235,36 @@ pub struct FlakeInfo {
 }
 
 impl FlakeInfo {
+    /// This flake at another commit, `rev` (a full commit hash, as a host's
+    /// generation records it): the locked URL with its revision swapped and
+    /// the attributes of its own tree (`narHash`, `lastModified`,
+    /// `revCount`) and `ref` dropped. `None` when this resolution has no
+    /// revision in its URL to swap, or `rev` isn't a commit hash: it comes
+    /// from a host, and must not be able to point nix anywhere else.
+    pub fn at_rev(&self, rev: &str) -> Option<String> {
+        let current = self.rev.as_deref()?;
+        if !is_commit_hash(rev) || !self.locked.contains(current) {
+            return None;
+        }
+        let swapped = self.locked.replacen(current, rev, 1);
+        let (base, query) = match swapped.split_once('?') {
+            Some((base, query)) => (base, query),
+            None => (swapped.as_str(), ""),
+        };
+        let kept: Vec<&str> = query
+            .split('&')
+            .filter(|kv| {
+                let key = kv.split('=').next().unwrap_or_default();
+                !kv.is_empty() && !matches!(key, "narHash" | "lastModified" | "revCount" | "ref")
+            })
+            .collect();
+        Some(if kept.is_empty() {
+            base.to_owned()
+        } else {
+            format!("{base}?{}", kept.join("&"))
+        })
+    }
+
     /// First 7 characters of `rev`, `<7>-dirty` for dirty trees, else `unknown`.
     pub fn short_rev(&self) -> String {
         match (&self.rev, &self.dirty_rev) {
@@ -422,6 +452,14 @@ const LOCK_NOTICES: [&str; 5] = [
 /// `not writing modified lock file` / `creating lock file` (and the other
 /// lock-file notices) → `lock_outdated`. See the fixtures in
 /// `tests/fixtures/` for real outputs (github, path, git clean and dirty).
+/// A full git commit hash: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
+pub fn is_commit_hash(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64)
+        && rev
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 pub fn parse_metadata(flake: &str, stdout: &str, stderr: &str) -> Result<FlakeInfo, String> {
     if stdout.trim().is_empty() {
         return Err("nix flake metadata printed nothing".into());
@@ -1052,6 +1090,36 @@ error:
         assert!(parse_hosts("null").is_err());
         assert!(parse_hosts(r#"{"nixos":[1]}"#).is_err());
         assert!(parse_hosts(r#"{"home":"bigmem"}"#).is_err());
+    }
+
+    #[test]
+    fn a_flake_at_another_revision() {
+        const REV: &str = "40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4";
+        let github = parse_metadata("github:jjant/nix-config", GITHUB, "").unwrap();
+        assert_eq!(
+            github.at_rev(REV).as_deref(),
+            Some("github:jjant/nix-config/40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4")
+        );
+        let git = parse_metadata("git+file:///tmp/hostctl-ifd", GIT, "").unwrap();
+        assert_eq!(
+            git.at_rev(REV).as_deref(),
+            Some("git+file:///tmp/hostctl-ifd?rev=40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4")
+        );
+        // Nothing to swap.
+        let path = parse_metadata("/tmp/hostctl-ifd", PATH, "").unwrap();
+        assert_eq!(path.at_rev(REV), None);
+        let dirty = parse_metadata(".", GIT_DIRTY, GIT_DIRTY_STDERR).unwrap();
+        assert_eq!(dirty.at_rev(REV), None);
+        // What a host reports must be a commit, not a way into the URL.
+        for rev in [
+            "40ad9d3",
+            "40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4-dirty",
+            "40AD9D3E5C7C0E6F1D2B3A4C5D6E7F8091A2B3C4",
+            "../../other/repo/main?narHash=x&dir=..aaaaaaaaaaaaaa",
+        ] {
+            assert_eq!(github.at_rev(rev), None, "{rev}");
+        }
+        assert!(is_commit_hash(&"a".repeat(64)));
     }
 
     #[test]
