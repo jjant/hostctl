@@ -28,6 +28,10 @@ pub const MAX_ENTRIES: usize = 64;
 /// Commit times kept (the newest commits win).
 pub const MAX_REVISIONS: usize = 256;
 
+/// How long a revision whose commit time couldn't be looked up is left
+/// alone (unless `--refresh`): not pushed yet, say.
+pub const UNDATABLE_FOR: i64 = 3600;
+
 /// A bigger file isn't one hostctl wrote (64 entries stay far below this):
 /// treated as corrupt rather than read into memory.
 const MAX_FILE_BYTES: u64 = 32 << 20;
@@ -87,6 +91,10 @@ pub struct CacheFile {
     /// revisions hosts run that hostctl never evaluated.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub revisions: BTreeMap<String, i64>,
+    /// `<flake as configured>@<rev>` → when looking up its commit time last
+    /// failed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub undatable: BTreeMap<String, i64>,
 }
 
 /// Which flake revision a store path was the desired generation of.
@@ -260,6 +268,24 @@ impl Cache {
             prune_revisions(&mut self.data.revisions, MAX_REVISIONS);
             self.dirty = true;
         }
+    }
+
+    /// Looking up when `rev` of `flake` was committed failed less than
+    /// [`UNDATABLE_FOR`] before `now`.
+    pub fn undatable(&self, flake: &str, rev: &str, now: i64) -> bool {
+        self.data
+            .undatable
+            .get(&revision_key(flake, rev))
+            .is_some_and(|&at| now - at < UNDATABLE_FOR)
+    }
+
+    /// Remember that looking up when `rev` of `flake` was committed failed.
+    pub fn record_undatable(&mut self, flake: &str, rev: &str, now: i64) {
+        self.data.undatable.insert(revision_key(flake, rev), now);
+        self.data
+            .undatable
+            .retain(|_, at| now - *at < UNDATABLE_FOR);
+        self.dirty = true;
     }
 
     /// Which cached flake revision `out` was the desired generation of; the
@@ -441,6 +467,13 @@ fn merge(ours: &mut CacheFile, theirs: CacheFile, touched_hints: &BTreeSet<Strin
     for (key, at) in theirs.revisions {
         ours.revisions.entry(key).or_insert(at);
     }
+    for (key, at) in theirs.undatable {
+        let mine = ours.undatable.entry(key).or_insert(at);
+        *mine = (*mine).max(at);
+    }
+    // Dated meanwhile.
+    ours.undatable
+        .retain(|key, _| !ours.revisions.contains_key(key));
 }
 
 fn revision_key(flake: &str, rev: &str) -> String {
@@ -1053,11 +1086,36 @@ mod tests {
     }
 
     #[test]
+    fn undatable_revisions_are_left_alone_for_a_while() {
+        let (_dir, path) = temp_cache();
+        let mut cache = Cache::open(path.clone());
+        let f = "github:jjant/nix-config";
+        assert!(!cache.undatable(f, "40ad9d3", 1000));
+        cache.record_undatable(f, "40ad9d3", 1000);
+        assert!(cache.undatable(f, "40ad9d3", 1000 + UNDATABLE_FOR - 1));
+        assert!(!cache.undatable(f, "40ad9d3", 1000 + UNDATABLE_FOR));
+        assert!(!cache.undatable(f, "1a2b3c4", 1000));
+        cache.save().unwrap();
+        let mut other = Cache::open(path.clone());
+        assert!(other.undatable(f, "40ad9d3", 1001));
+        // Another process dated it meanwhile: the failure is forgotten.
+        other.record_revision(f, "40ad9d3", 900);
+        other.save().unwrap();
+        cache.record_undatable(f, "5e6f7a8", 1002);
+        cache.save().unwrap();
+        let reopened = Cache::open(path);
+        assert!(!reopened.undatable(f, "40ad9d3", 1003));
+        assert_eq!(reopened.revision_time(f, "40ad9d3"), Some(900));
+        assert!(reopened.undatable(f, "5e6f7a8", 1003));
+    }
+
+    #[test]
     fn only_the_newest_revision_times_are_kept() {
+        // The newest commits, whatever their keys.
         let mut revisions: BTreeMap<String, i64> =
-            (0..10).map(|i| (format!("f@{i}"), 100 - i)).collect();
+            (0..10).map(|i| (format!("f@{i}"), 100 + i)).collect();
         prune_revisions(&mut revisions, 3);
-        assert_eq!(revisions.keys().collect::<Vec<_>>(), ["f@0", "f@1", "f@2"]);
+        assert_eq!(revisions.keys().collect::<Vec<_>>(), ["f@7", "f@8", "f@9"]);
     }
 
     #[test]

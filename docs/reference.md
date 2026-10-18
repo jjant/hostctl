@@ -128,9 +128,11 @@ From most to least urgent (the order `s` sorts by):
 revision it runs, recorded by the generation itself as `configurationRevision`
 or remembered by hostctl from an earlier check), `on <rev> (<age> newer)` (a
 commit later than the compared one, such as a branch being tried out:
-activating would go back, so the `update:` suggestion leaves the host out;
-hostctl looks up when a recorded revision was committed once, with `nix flake
-metadata`, unless `--offline`), `same rev, different build`
+activating would go back, so the `update:` suggestion leaves the host out; to
+date a recorded revision hostctl fetches that commit of the flake's repository
+after the check: github, gitlab, sourcehut or git flakes; once per commit, again
+an hour after a failure or on `--refresh`, never `--offline`), `same rev,
+different build`
 (activated from a reference without `rev`, or with overridden inputs), `staged`
 (the profile already points at the desired generation; a switch or reboot is
 pending) or `unknown generation` (not built from a revision hostctl has
@@ -560,6 +562,11 @@ slowest probe, a quarter of a second.
   shell-quoted; destinations are parsed and passed after `--`; destinations and
   flakes starting with `-` are rejected. Interactive commands are uploaded into
   a private temp file (`umask 077`, `mktemp`) that deletes itself.
+- What a host says is only data: its revision is used to date a commit, by
+  fetching that commit's tree from the compared flake's repository (no
+  evaluation, no inputs). A host can name any commit that repository serves
+  (on GitHub, also its forks' commits), so a host that lies about its
+  revision can make itself look newer, but no more.
 - Everything a host or flake says (names, paths, errors) is stripped of
   terminal control sequences before it is displayed.
 - The cache (`$XDG_CACHE_HOME/hostctl/cache.json`) holds store paths and

@@ -59,7 +59,11 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long looking up a revision's commit time may take (it may fetch the
 /// revision; [`Engine::date_revisions`]).
-const DATING_TIMEOUT: Duration = Duration::from_secs(60);
+const DATING_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How much longer than its probes and evaluations a check may take to date
+/// revisions.
+const DATING_BUDGET: Duration = Duration::from_secs(30);
 
 /// Revision lookups at once (each may download a tarball).
 const DATING_JOBS: usize = 4;
@@ -919,7 +923,9 @@ impl Engine {
                             last_modified: Some(at),
                         });
                     }
-                    None if nix::is_commit_hash(rev) => run.undated(&host.flake, rev),
+                    None if nix::is_commit_hash(rev) && !self.undatable(&host.flake, rev) => {
+                        run.undated(&host.flake, rev);
+                    }
                     None => {}
                 }
             }
@@ -931,12 +937,21 @@ impl Engine {
         });
     }
 
-    /// When the revisions in [`Run::undated`] were committed: `nix flake
-    /// metadata` of each one's flake at that revision
-    /// ([`FlakeInfo::at_rev`]), [`DATING_JOBS`] at a time, each within
-    /// [`DATING_TIMEOUT`]; recorded in the cache and sent as
-    /// `RevisionDated`. Never under [`Freshness::Offline`] (it may fetch).
-    /// A lookup that fails only leaves the revision undated.
+    /// A lookup of when `rev` was committed failed lately (only `--refresh`
+    /// tries again sooner than [`crate::cache::UNDATABLE_FOR`]).
+    fn undatable(&self, flake: &str, rev: &str) -> bool {
+        self.freshness != Freshness::Force
+            && self.with_cache(|cache| cache.undatable(flake, rev, util::now_unix()))
+    }
+
+    /// When the revisions in [`Run::undated`] were committed:
+    /// [`nix::NixConfig::commit_time`] of each one's repository at that
+    /// commit ([`FlakeInfo::at_rev`]), [`DATING_JOBS`] at a time, each
+    /// within [`DATING_TIMEOUT`] and all within [`DATING_BUDGET`]; recorded
+    /// in the cache (failures too: [`Self::undatable`]) and sent as
+    /// `RevisionDated`. Never under [`Freshness::Offline`] (it may fetch),
+    /// nor for a flake whose resolution is stale (the network just failed).
+    /// A failed lookup only leaves the revision undated.
     async fn date_revisions(&self, run: &Run<'_>) {
         if self.freshness == Freshness::Offline {
             return;
@@ -957,23 +972,27 @@ impl Engine {
         let lookups = undated.into_iter().filter_map(|(flake, rev)| {
             let info = resolved.get(&flake)?;
             // The compared revision dates itself.
-            if info.rev.as_deref() == Some(rev.as_str()) {
+            if info.stale.is_some() || info.rev.as_deref() == Some(rev.as_str()) {
                 return None;
             }
             let url = info.at_rev(&rev)?;
             Some(async move {
-                let spec = self.inner.config.nix.metadata(&url, false);
-                let out = self.run(spec, Some(timeout)).await.ok()?;
-                let dated = nix::parse_metadata(&url, &out.stdout, &out.stderr).ok()?;
-                let at = dated
-                    .last_modified
-                    .filter(|_| out.success() && dated.rev.as_deref() == Some(rev.as_str()))?;
-                Some((flake, rev, at))
+                let spec = self.inner.config.nix.commit_time(&url);
+                let at = match self.run(spec, Some(timeout)).await {
+                    Ok(out) if out.success() => out.stdout.trim().parse::<i64>().ok(),
+                    _ => None,
+                };
+                (flake, rev, at)
             })
         });
         let mut lookups = futures_util::stream::iter(lookups).buffer_unordered(DATING_JOBS);
-        while let Some(found) = lookups.next().await {
-            if let Some((flake, rev, last_modified)) = found {
+        let dating = async {
+            while let Some((flake, rev, at)) = lookups.next().await {
+                let now = util::now_unix();
+                let Some(last_modified) = at else {
+                    self.with_cache(|cache| cache.record_undatable(&flake, &rev, now));
+                    continue;
+                };
                 self.with_cache(|cache| cache.record_revision(&flake, &rev, last_modified));
                 run.send(Event::RevisionDated {
                     flake,
@@ -981,7 +1000,9 @@ impl Engine {
                     last_modified,
                 });
             }
-        }
+        };
+        // What isn't dated by then is tried again next time.
+        let _ = tokio::time::timeout(DATING_BUDGET, dating).await;
     }
 
     /// [`remote::ssh_hint`] for a run on `target`: none for this machine,
@@ -2017,6 +2038,11 @@ mod tests {
             "sh" => "interactive local".into(),
             _ if args == ["--version"] => "version".into(),
             _ if args.contains(&"metadata") => format!("metadata {last}"),
+            // `commit-time <url>` (NixConfig::commit_time).
+            _ if last.contains("builtins.fetchTree") => {
+                let url = last.split('"').nth(1).unwrap_or("?");
+                format!("commit-time {url}")
+            }
             _ if args.contains(&"--raw") => {
                 let attr = last.split_once("#.").map_or(last, |(_, attr)| attr);
                 let attr = attr.strip_suffix(".outPath").unwrap_or(attr);
@@ -3402,13 +3428,6 @@ error:
         );
     }
 
-    /// `nix flake metadata` of [`GITHUB`] at `rev`, committed at `at`.
-    fn dated_json(rev: &str, at: i64) -> String {
-        format!(
-            r#"{{"url":"github:o/r/{rev}?narHash=sha256-{rev}","revision":"{rev}","lastModified":{at},"locked":{{"type":"github","rev":"{rev}","narHash":"sha256-{rev}","lastModified":{at}}}}}"#
-        )
-    }
-
     /// A probe answer whose generation records the revision it came from.
     fn running_rev(current: &StorePath, rev: &str) -> Reply {
         Reply::ok(framed(&format!(
@@ -3428,8 +3447,8 @@ error:
             evaluates(&sp('c', "main")).after(100),
         )
         .on(
-            &format!("metadata {GITHUB}/{REV2}"),
-            Reply::ok(dated_json(REV2, 1792300000)).after(50),
+            &format!("commit-time {GITHUB}/{REV2}"),
+            Reply::ok("1792300000").after(50),
         );
         let hosts = ids(vec![remote("web1")]);
         let engine = engine(&config(), Cache::in_memory(), &fake);
@@ -3444,13 +3463,23 @@ error:
             ],
             "{seen:#?}"
         );
-        let call = &fake.calls_to(&format!("metadata {GITHUB}/{REV2}"))[0];
-        assert!(!call.has("--refresh"));
+        let call = &fake.calls_to(&format!("commit-time {GITHUB}/{REV2}"))[0];
         assert_eq!(call.timeout, Some(DATING_TIMEOUT));
+        assert_eq!(
+            call.spec.args.last().map(String::as_str),
+            Some(
+                format!("builtins.toString (builtins.fetchTree \"{GITHUB}/{REV2}\").lastModified")
+                    .as_str()
+            ),
+            "only the tree is fetched, the flake isn't read"
+        );
         // Now the cache knows: the next probe comes with the time.
         let seen = check(&engine, &hosts, &[]).await;
         assert!(!lines(&seen).iter().any(|line| line.contains("dated")));
-        assert_eq!(fake.calls_to(&format!("metadata {GITHUB}/{REV2}")).len(), 1);
+        assert_eq!(
+            fake.calls_to(&format!("commit-time {GITHUB}/{REV2}")).len(),
+            1
+        );
         let deployed = seen.iter().find_map(|(_, event)| match event {
             Event::ProbeFinished { deployed, .. } => deployed.clone(),
             _ => None,
@@ -3467,16 +3496,15 @@ error:
 
     #[tokio::test(start_paused = true)]
     async fn revisions_are_dated_only_when_they_can_be() {
-        // The compared revision itself, a dirty or short one, a failed
-        // lookup, or one that answers for another revision: no date, and
-        // the check still ends.
+        // The compared revision itself, a dirty or short one, or a lookup
+        // that fails: no date, and the check still ends.
         let fake = world();
         let cases = [
             ("same", REV1.to_string()),
             ("dirty", format!("{REV2}-dirty")),
             ("short", REV2[..7].to_string()),
             ("failing", "e".repeat(40)),
-            ("lying", "f".repeat(40)),
+            ("garbled", "f".repeat(40)),
         ];
         for (name, rev) in &cases {
             fake.on(&format!("probe {name}"), running_rev(&sp('b', name), rev))
@@ -3485,32 +3513,74 @@ error:
                     evaluates(&sp('c', name)),
                 );
         }
-        fake.on(
-            &format!("metadata {GITHUB}/{}", "e".repeat(40)),
-            Reply::exit(1, FETCH_FAILED),
-        )
-        .on(
-            &format!("metadata {GITHUB}/{}", "f".repeat(40)),
-            Reply::ok(dated_json(REV2, 1792300000)),
-        );
+        let lookup = |rev: &str| format!("commit-time {GITHUB}/{rev}");
+        fake.on(&lookup(&"e".repeat(40)), Reply::exit(1, FETCH_FAILED))
+            .on(&lookup(&"f".repeat(40)), Reply::ok("soon"));
         let hosts = ids(cases.iter().map(|(name, _)| remote(name)).collect());
         let engine = engine(&config(), Cache::in_memory(), &fake);
         let seen = lines(&check(&engine, &hosts, &[]).await);
         assert!(!seen.iter().any(|line| line.contains("dated")), "{seen:#?}");
         assert_eq!(seen.last().map(String::as_str), Some("300 run-"));
-        let mut lookups: Vec<String> = fake
-            .keys()
-            .into_iter()
-            .filter(|key| key.starts_with(&format!("metadata {GITHUB}/")))
-            .collect();
-        lookups.sort();
+        let lookups = || {
+            let mut keys: Vec<String> = fake
+                .calls()
+                .iter()
+                .map(|c| c.key.clone())
+                .filter(|key| key.starts_with("commit-time "))
+                .collect();
+            keys.sort();
+            keys
+        };
         assert_eq!(
-            lookups,
-            [
-                format!("metadata {GITHUB}/{}", "e".repeat(40)),
-                format!("metadata {GITHUB}/{}", "f".repeat(40))
-            ]
+            lookups(),
+            [lookup(&"e".repeat(40)), lookup(&"f".repeat(40))]
         );
+        // A failed lookup isn't repeated at the next check, only on --refresh.
+        check(&engine, &hosts, &[]).await;
+        assert_eq!(lookups().len(), 2);
+        let refresh = engine.with_freshness(Freshness::Force);
+        check(&refresh, &hosts, &[]).await;
+        assert_eq!(lookups().len(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dating_has_a_budget_and_takes_turns() {
+        let fake = world();
+        let revs: Vec<String> = (0..6).map(|i| format!("{i}").repeat(40)).collect();
+        for (i, rev) in revs.iter().enumerate() {
+            let name = format!("h{i}");
+            fake.on(&format!("probe {name}"), running_rev(&sp('b', &name), rev))
+                .on(
+                    &format!("eval-ro {}", attr(&name)),
+                    evaluates(&sp('c', &name)),
+                )
+                // Hangs past every limit but the last, which answers.
+                .on(
+                    &format!("commit-time {GITHUB}/{rev}"),
+                    if i == 5 {
+                        Reply::ok("1792300000").after(10)
+                    } else {
+                        Reply::ok("1792300000").after(25_000)
+                    },
+                );
+        }
+        let hosts = ids((0..6).map(|i| remote(&format!("h{i}"))).collect());
+        let engine = engine(&config(), Cache::in_memory(), &fake);
+        let seen = lines(&check(&engine, &hosts, &[]).await);
+        // Four at once, each cut at 20 s; the last two start at 20 s and
+        // h5 is dated then; h4 is cut by the 30 s budget.
+        let starts: Vec<u64> = fake
+            .calls()
+            .iter()
+            .filter(|c| c.key.starts_with("commit-time "))
+            .map(|c| c.start)
+            .collect();
+        assert_eq!(starts, [300, 300, 300, 300, 20_300, 20_300], "{seen:#?}");
+        assert!(
+            seen.contains(&"20310 dated github:o/r@5555555 1792300000".to_string()),
+            "{seen:#?}"
+        );
+        assert_eq!(seen.last().map(String::as_str), Some("30300 run-"));
     }
 
     #[tokio::test(start_paused = true)]

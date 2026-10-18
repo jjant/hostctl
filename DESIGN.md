@@ -44,8 +44,11 @@ Outdated hosts get a **drift** qualifier: `on <rev> (<age> old)` (deployed
 revision known from the generation itself — `configurationRevision` — or from
 hostctl's cache), `on <rev> (<age> newer)` (committed after the compared
 revision: left out of the `update:` suggestion; a recorded revision the cache
-can't date is looked up once after the check, `nix flake metadata` of the
-flake's locked URL with that commit swapped in, never `--offline`), `same rev, different build` (revision equal, paths differ:
+can't date is looked up after the check by fetching that commit —
+`builtins.fetchTree` of the locked URL with the commit swapped in, so nothing of
+it is evaluated (no `flake.nix`, no inputs) — for git-based flakes, ≤ 4 at
+once, 20 s each, 30 s in all, never `--offline` or on a stale resolution; a
+failure is retried after an hour or on `--refresh`), `same rev, different build` (revision equal, paths differ:
 activated from a flake reference without `rev`, or with overridden inputs),
 `staged` (the profile already points at the desired generation; switch/reboot
 pending), or `unknown generation` (not built from a revision hostctl has
@@ -294,7 +297,8 @@ even with `--impure` in `nix.options`), cached by flake identity.
 - Reverse lookup (`deployed_rev`) names the revision a host runs when the
   generation itself doesn't record it.
 - `"revisions": { "<flake>@<rev>": <lastModified> }` dates revisions hosts run
-  that hostctl never evaluated (256 newest kept).
+  that hostctl never evaluated (256 newest kept); `"undatable"` (same keys →
+  when the lookup failed) holds off retries for an hour.
 
 ## Closure diff (`d`/Enter in the TUI, `hostctl diff <host>`)
 

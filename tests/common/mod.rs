@@ -716,6 +716,14 @@ impl World {
         format!("{flake}/{rev}?narHash=sha256-{}%3D", &rev[..8])
     }
 
+    /// The commit `url` names (a flake reference at one revision) was made
+    /// at `last_modified` (what `builtins.fetchTree` says).
+    pub fn commit(&self, url: &str, last_modified: i64) -> Answer {
+        let file = self.fake.join("commits").join(key(url));
+        write(&file, last_modified.to_string());
+        Answer(file)
+    }
+
     /// `attr` evaluates to `out`.
     pub fn eval(&self, attr: &str, out: &str) -> Answer {
         let file = self.fake.join("evals").join(key(attr));

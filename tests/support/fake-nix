@@ -6,6 +6,8 @@
 #   flakes/<flake>/metadata.json   `nix flake metadata --json … <flake>`
 #   hosts.json                  `nix eval --json … '<locked>#.' --apply …` (discovery)
 #   evals/<attr>                `nix eval --raw … '<locked>#.<attr>.outPath'`
+#   commits/<url>               `nix eval --raw --expr 'builtins.toString
+#                               (builtins.fetchTree "<url>").lastModified'`
 #   evals/<attr>.readonly-fails   `--read-only` evaluations of <attr> fail the
 #                               way import-from-derivation does
 #   builds/<attr>               `nix build … '<locked>#.<attr>'`: the closure
@@ -68,6 +70,13 @@ case "${1:-} ${2:-}" in
   replay "$F/flakes/$(key "$last")/metadata.json" '^start [0-9]* ssh '
   ;;
 "eval --raw")
+  case $last in
+  *builtins.fetchTree*)
+    url=${last#*\"}
+    url=${url%%\"*}
+    replay "$F/commits/$(key "$url")"
+    ;;
+  esac
   attr=${last#*#.}
   attr=${attr%.outPath}
   base=$F/evals/$(key "$attr")

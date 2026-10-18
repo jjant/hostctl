@@ -42,6 +42,21 @@ impl NixConfig {
             .arg(flake)
     }
 
+    /// `nix <FEATURES> eval --raw <options> --expr 'builtins.toString
+    /// (builtins.fetchTree "<url>").lastModified'`: when the commit `url`
+    /// names ([`FlakeInfo::at_rev`]) was made. Only the tree is fetched: it
+    /// isn't a flake to nix here, so neither its `flake.nix` nor its inputs
+    /// are read.
+    pub fn commit_time(&self, url: &str) -> CommandSpec {
+        let expr = format!(
+            "builtins.toString (builtins.fetchTree {}).lastModified",
+            nix_string(url)
+        );
+        self.nix(["eval", "--raw"])
+            .args(&self.options)
+            .args(["--expr", expr.as_str()])
+    }
+
     /// `nix <FEATURES> eval --raw [--read-only] <EVAL_OPTIONS> <options>
     /// '<locked>#.<attr>.outPath'` — the leading `.` makes the attribute
     /// path absolute (no `packages.<system>`/`legacyPackages.<system>`
@@ -235,15 +250,23 @@ pub struct FlakeInfo {
 }
 
 impl FlakeInfo {
-    /// This flake at another commit, `rev` (a full commit hash, as a host's
-    /// generation records it): the locked URL with its revision swapped and
-    /// the attributes of its own tree (`narHash`, `lastModified`,
-    /// `revCount`) and `ref` dropped. `None` when this resolution has no
-    /// revision in its URL to swap, or `rev` isn't a commit hash: it comes
-    /// from a host, and must not be able to point nix anywhere else.
+    /// This flake's repository at another commit, `rev` (a full commit
+    /// hash, as a host's generation records it): the locked URL with its
+    /// revision swapped and the attributes of its own tree (`narHash`,
+    /// `lastModified`, `revCount`) and `ref` dropped. Only for git
+    /// repositories (`github`, `gitlab`, `sourcehut`: SHA-1 hashes;
+    /// `git`), and only when this resolution has a revision in its URL to
+    /// swap. `rev` comes from a host: being a bare commit hash, it can only
+    /// name a commit nix finds through this URL (on GitHub that includes the
+    /// repository's forks).
     pub fn at_rev(&self, rev: &str) -> Option<String> {
         let current = self.rev.as_deref()?;
-        if !is_commit_hash(rev) || !self.locked.contains(current) {
+        let hash_fits = match self.kind.as_deref() {
+            Some("github" | "gitlab" | "sourcehut") => rev.len() == 40,
+            Some("git") => true,
+            _ => false,
+        };
+        if !hash_fits || !is_commit_hash(rev) || !self.locked.contains(current) {
             return None;
         }
         let swapped = self.locked.replacen(current, rev, 1);
@@ -444,14 +467,15 @@ const LOCK_NOTICES: [&str; 5] = [
     "will not write lock file",
 ];
 
-/// Parse `nix flake metadata --json` stdout (requires `url`; everything else
-/// optional, Nix/Lix/Determinate differ; top-level and `locked.*` fields
-/// back each other up) and inspect its `stderr`: a download that fell back
-/// to Nix's cache (`; using cached version`) or failed without a retry
-/// (`unable to download`) → `stale`, with the warning as the reason;
-/// `not writing modified lock file` / `creating lock file` (and the other
-/// lock-file notices) → `lock_outdated`. See the fixtures in
-/// `tests/fixtures/` for real outputs (github, path, git clean and dirty).
+/// `s` as a Nix string literal.
+fn nix_string(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace("${", "\\${");
+    format!("\"{escaped}\"")
+}
+
 /// A full git commit hash: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
 pub fn is_commit_hash(rev: &str) -> bool {
     matches!(rev.len(), 40 | 64)
@@ -460,6 +484,14 @@ pub fn is_commit_hash(rev: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Parse `nix flake metadata --json` stdout (requires `url`; everything else
+/// optional, Nix/Lix/Determinate differ; top-level and `locked.*` fields
+/// back each other up) and inspect its `stderr`: a download that fell back
+/// to Nix's cache (`; using cached version`) or failed without a retry
+/// (`unable to download`) → `stale`, with the warning as the reason;
+/// `not writing modified lock file` / `creating lock file` (and the other
+/// lock-file notices) → `lock_outdated`. See the fixtures in
+/// `tests/fixtures/` for real outputs (github, path, git clean and dirty).
 pub fn parse_metadata(flake: &str, stdout: &str, stderr: &str) -> Result<FlakeInfo, String> {
     if stdout.trim().is_empty() {
         return Err("nix flake metadata printed nothing".into());
@@ -1120,6 +1152,42 @@ error:
             assert_eq!(github.at_rev(rev), None, "{rev}");
         }
         assert!(is_commit_hash(&"a".repeat(64)));
+        // SHA-256 hashes only for plain git: github would read one as a branch.
+        assert_eq!(github.at_rev(&"a".repeat(64)), None);
+        assert!(git.at_rev(&"a".repeat(64)).is_some());
+        // Nothing but git repositories.
+        let tarball = FlakeInfo {
+            kind: Some("tarball".into()),
+            locked: format!(
+                "https://api.flakehub.com/f/pinned/o/r/0.1.2/{REV}/source.tar.gz?rev={}",
+                github.rev.as_deref().unwrap()
+            ),
+            ..github.clone()
+        };
+        assert_eq!(tarball.at_rev(REV), None);
+    }
+
+    #[test]
+    fn commit_times_come_from_the_tree_alone() {
+        let nix = NixConfig {
+            options: vec!["--store".into(), "local?root=/tmp/s".into()],
+            ..NixConfig::default()
+        };
+        let spec = nix.commit_time("github:o/r/40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4");
+        assert_eq!(
+            spec.args,
+            [
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "eval",
+                "--raw",
+                "--store",
+                "local?root=/tmp/s",
+                "--expr",
+                r#"builtins.toString (builtins.fetchTree "github:o/r/40ad9d3e5c7c0e6f1d2b3a4c5d6e7f8091a2b3c4").lastModified"#,
+            ]
+        );
+        assert_eq!(nix_string(r#"a"b\c${d}"#), r#""a\"b\\c\${d}""#);
     }
 
     #[test]

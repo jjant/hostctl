@@ -1270,11 +1270,7 @@ fn a_host_on_a_newer_commit_says_so_and_is_left_out_of_the_update() {
     // just behind.
     home_host(&w, "web1", &hm('b'), &hm('a')).revision(&hm('b'), REV2);
     home_host(&w, "web2", &hm('c'), &hm('d'));
-    let dated = w.flake_at(&format!("{FLAKE}/{REV2}"), REV2);
-    let mut metadata: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&dated.0).unwrap()).unwrap();
-    metadata["lastModified"] = json!(now() - 3600 - 60);
-    std::fs::write(&dated.0, metadata.to_string()).unwrap();
+    w.commit(&format!("{FLAKE}/{REV2}"), now() - 3600 - 60);
 
     let run = w.run(&["status", "--plain"]);
     run.code(1);
