@@ -27,9 +27,10 @@ insta = "1.49.0"
 tempfile = "3.27.0"
 tokio = { version = "1.53.3", features = ["rt", "process", "time", "sync", "macros", "io-util", "signal", "test-util"] }
 
+# Thin LTO over the default 16 codegen units: the crate builds in 10 s instead
+# of fat LTO's single-threaded 51 s, for a 3.5 MB binary instead of 2.7 MB.
 [profile.release]
-lto = true
-codegen-units = 1
+lto = "thin"
 strip = true
 
 [profile.dev.package.insta]
