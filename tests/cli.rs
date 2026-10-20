@@ -1974,6 +1974,30 @@ fn an_upload_whose_run_never_connected_is_removed() {
 }
 
 #[test]
+fn activate_all_activates_every_host_that_needs_it() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["web1", "web2", "web3"]);
+    let switch =
+        "activate = 'ln -sfn home-manager-6-link \"$HOME/.local/state/nix/profiles/home-manager\"'";
+    w.config(&format!("[hosts.web1]\n{switch}\n[hosts.web3]\n{switch}\n"));
+    for (name, current, desired) in [("web1", 'a', 'b'), ("web3", 'c', 'd')] {
+        home_host(&w, name, &hm(current), &hm(desired)).generation(
+            "~/.local/state/nix/profiles/home-manager",
+            6,
+            &hm(desired),
+        );
+    }
+    home_host(&w, "web2", &hm('e'), &hm('e'));
+    let run = w.run(&["activate", "--all", "--yes"]);
+    run.code(0);
+    assert!(run.stdout.contains("\n==> activating web1\n"), "{run}");
+    assert!(run.stdout.contains("\n==> activating web3\n"), "{run}");
+    assert!(!run.stdout.contains("activating web2"), "{run}");
+    assert!(run.stdout.ends_with("\n2 of 2 hosts up to date\n"), "{run}");
+}
+
+#[test]
 fn activate_without_a_terminal_needs_yes() {
     let w = World::new();
     w.flake(REV1);

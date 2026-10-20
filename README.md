@@ -40,7 +40,7 @@ or user, a host behind a tunnel, a custom activation command) goes in
 ```text
 hostctl status [HOST…]     print the table (--json for scripts)
 hostctl diff HOST          what activating HOST would change
-hostctl activate HOST…     activate the generation that was compared
+hostctl activate HOST…     activate the generation that was compared (--all: every host)
 hostctl hosts              list the hosts and how each one is reached
 ```
 

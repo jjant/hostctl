@@ -127,8 +127,11 @@ pub enum Cmd {
     /// Activate the flake's configuration on hosts (interactive)
     Activate {
         /// Hosts (globs or @local) to activate
-        #[arg(required = true, add = ArgValueCompleter::new(complete_hosts))]
+        #[arg(required_unless_present = "all", add = ArgValueCompleter::new(complete_hosts))]
         hosts: Vec<String>,
+        /// All hosts
+        #[arg(long, conflicts_with = "hosts")]
+        all: bool,
         /// Don't ask for confirmation
         #[arg(short, long)]
         yes: bool,
@@ -372,7 +375,13 @@ fn run(cli: Cli, hostctl: &str, started: Instant) -> Result<u8, Exit> {
             Check::Status { hosts, json, plain }
         }
         Some(Cmd::Diff { host, build, json }) => Check::Diff { host, build, json },
-        Some(Cmd::Activate { hosts, yes, force }) => Check::Activate { hosts, yes, force },
+        // `--all` is no patterns: every host.
+        Some(Cmd::Activate {
+            hosts,
+            all: _,
+            yes,
+            force,
+        }) => Check::Activate { hosts, yes, force },
         Some(Cmd::Hosts { hosts }) => Check::Hosts { hosts },
         None => Check::Status {
             hosts: status.hosts,
@@ -1900,7 +1909,12 @@ mod tests {
         let cli = parse(&["activate", "-y", "a", "b", "--force"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Cmd::Activate { ref hosts, yes: true, force: true }) if hosts.len() == 2
+            Some(Cmd::Activate { ref hosts, all: false, yes: true, force: true }) if hosts.len() == 2
+        ));
+        let cli = parse(&["activate", "--all"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Cmd::Activate { ref hosts, all: true, .. }) if hosts.is_empty()
         ));
 
         let cli = parse(&["config", "check", "/etc/hostctl/config.toml"]).unwrap();
@@ -2002,6 +2016,7 @@ mod tests {
         for bad in [
             &["--bogus"][..],
             &["activate"],
+            &["activate", "--all", "a"],
             &["diff"],
             &["status", "--refresh", "--offline"],
             &["--color", "sometimes"],

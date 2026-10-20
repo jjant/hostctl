@@ -18,7 +18,7 @@ The details the [README](../README.md) leaves out.
 hostctl [PATTERN…]              status (with its flags too)
 hostctl status [PATTERN…]       check and print a table   [--json] [--plain]
 hostctl diff HOST               what activating would change (closure diff)   [--build] [--json]
-hostctl activate HOST…          activate the compared generation   [--yes] [--force]
+hostctl activate HOST…|--all    activate the compared generation   [--yes] [--force]
 hostctl hosts [PATTERN…]        the resolved hosts, where they come from, how they're reached
 hostctl config show|path|check [FILE]
 hostctl completions bash|zsh|fish|elvish|powershell
