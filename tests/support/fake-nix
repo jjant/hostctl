@@ -14,6 +14,8 @@
 #                               ("<path><TAB><size>" lines, the out path
 #                               first) it realises on the host it runs on
 #                               ($HOSTCTL_PROBE_ROOT/../closures)
+#   builds/<attr>.await         wait until that many builds have started
+#                               (10 s at most)
 #
 # <flake> and <attr> with every character outside [A-Za-z0-9._-] replaced by
 # `_`. Next to an answer file X, all optional: X.delay (seconds to wait
@@ -95,6 +97,13 @@ case "${1:-} ${2:-}" in
   ;;
 "build --no-link")
   base=$F/builds/$(key "${last#*#.}")
+  if [ -f "$base.await" ]; then
+    i=0
+    while [ "$(grep -c '^start [0-9]* nix .* build --no-link ' "$F/log")" -lt "$(cat "$base.await")" ] && [ "$i" -lt 200 ]; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+  fi
   [ -f "$base" ] || { echo "error: fake-nix can't build ${last#*#.}" >&2; finish 1; }
   [ -f "$base.delay" ] && sleep "$(cat "$base.delay")"
   out=$(head -n 1 "$base" | cut -f 1)

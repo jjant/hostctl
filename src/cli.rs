@@ -10,6 +10,8 @@ use std::process::{ExitCode, ExitStatus};
 use std::time::Instant;
 
 use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand, ValueEnum};
+use futures_util::StreamExt as _;
+use futures_util::stream::FuturesUnordered;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -1318,6 +1320,14 @@ async fn activate(
         return Ok(state.exit_code());
     }
 
+    // One at a time, each activation has the terminal; their builds,
+    // which take most of the time, needn't.
+    let unbuilt = if plan.len() > 1 {
+        build_all(engine, &state, &plan, style, signals).await?
+    } else {
+        Vec::new()
+    };
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut up_to_date = 0;
     let mut attempted = 0;
@@ -1326,6 +1336,9 @@ async fn activate(
         let host = state.hosts[id].host.clone();
         let name = util::one_line(&host.name).into_owned();
         attempted += 1;
+        if unbuilt.contains(&id) {
+            continue;
+        }
         print(&format!("\n{}\n", activating(&host, activation, style)))?;
         let label = format!("preparing the activation of {name}");
         let prepared = live::wait_for(
@@ -1382,6 +1395,79 @@ async fn activate(
     } else {
         2
     })
+}
+
+/// Build the new generations of `plan`'s hosts all at once, without a
+/// terminal, where their activations run ([`Engine::build`]), saying how
+/// each went as it ends; the hosts whose build failed, which aren't to be
+/// activated. A host [`actions::build_command`] can't build is left to its
+/// activation.
+async fn build_all(
+    engine: &Engine,
+    state: &AppState,
+    plan: &[(HostId, Activation)],
+    style: Style,
+    signals: &mut Signals,
+) -> Result<Vec<HostId>, Exit> {
+    let mut building = Vec::new();
+    let mut builds = FuturesUnordered::new();
+    for &(id, _) in plan {
+        let host = &state.hosts[id].host;
+        let Some(flake) = state.flake_info(&host.flake) else {
+            continue;
+        };
+        let Ok(command) = actions::build_command(host, flake) else {
+            continue;
+        };
+        building.push(id);
+        builds.push(async move { (id, engine.build(host, &command).await) });
+    }
+    if building.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names = |ids: &[HostId]| -> String {
+        ids.iter()
+            .map(|&id| util::one_line(&state.hosts[id].host.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    print(&format!(
+        "\n{}\n",
+        output::bold(style, &format!("==> building {}", names(&building)))
+    ))?;
+    let started = Instant::now();
+    let mut failed = Vec::new();
+    while !building.is_empty() {
+        let label = format!("building {}", names(&building));
+        let next = builds.next();
+        let Some(Some((id, built))) = live::wait_for_since(&label, started, next, signals).await
+        else {
+            print(&format!(
+                "interrupted: not activating {}\n",
+                names(&plan.iter().map(|&(id, _)| id).collect::<Vec<_>>())
+            ))?;
+            return Err(Exit::Interrupted);
+        };
+        building.retain(|&other| other != id);
+        let h = &state.hosts[id];
+        let name = util::one_line(&h.host.name);
+        print(&match built {
+            Ok(()) => format!(
+                "{} {name} built ({})\n",
+                output::status_icon(style, Status::UpToDate),
+                live::seconds(started.elapsed())
+            ),
+            Err(e) => {
+                failed.push(id);
+                format!(
+                    "{} {name}: build failed, not activating it: {}\n",
+                    output::status_icon(style, h.status()),
+                    describe(&e)
+                )
+            }
+        })?;
+    }
+    Ok(failed)
 }
 
 /// What `activate` is about to do.

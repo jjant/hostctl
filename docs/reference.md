@@ -51,10 +51,13 @@ without touching the network.
 from both closures read on the host. When the desired generation exists
 nowhere yet, `--build` builds or fetches it on the
 host first, interactively and without activating. `activate` asks, runs the
-activation with your terminal attached and re-checks the host. Before asking it
-shows the command when it comes from a template of yours or of the flake's
-inventory; hostctl's own commands (the defaults below) are shown if they fail,
-and `status --json` has every host's (`activate.command`).
+activation with your terminal attached and re-checks the host. With several
+hosts it first builds all their new generations at once, without a terminal,
+wherever each activation runs, then activates them one at a time; a host whose
+build fails isn't activated (activated alone, it builds on the terminal).
+Before asking it shows the command when it comes from a template of yours or of
+the flake's inventory; hostctl's own commands (the defaults below) are shown if
+they fail, and `status --json` has every host's (`activate.command`).
 
 ## Statuses
 

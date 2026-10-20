@@ -363,6 +363,16 @@ the exact command before asking when it isn't the kind's default template (it
 may come from the flake's inventory), the default one if it fails, and exactly
 that string is executed.
 
+Activations take the terminal one at a time (sudo, nix and the activation
+itself may ask). With several hosts, their builds — most of the time — come
+first, all at once and unattended: each host's `build_command` (`nix build
+--no-link --print-out-paths --accept-flake-config '<locked>#.<attr>'`, stdin
+`/dev/null`, no timeout) runs where its activation will, over the unattended
+channel; `==> building …` with a spinner, then a line per host as it ends. A
+host whose build fails isn't activated (nix's error is shown; activating it
+alone builds on the terminal); the others then activate as before, finding
+their generation built.
+
 ## Self detection
 
 1. `--self NAME` / `HOSTCTL_SELF` / config `self`: exactly that host (unknown

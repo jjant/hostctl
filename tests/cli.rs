@@ -1973,8 +1973,9 @@ fn an_upload_whose_run_never_connected_is_removed() {
     assert!(host.interactive_script().is_none());
 }
 
-#[test]
-fn activate_all_activates_every_host_that_needs_it() {
+/// web1 and web3 run generation 5 and have generation 6 to switch to,
+/// which `nix build` realises; web2 is up to date.
+fn fleet_world() -> World {
     let w = World::new();
     w.flake(REV1);
     discover_home(&w, &["web1", "web2", "web3"]);
@@ -1987,14 +1988,131 @@ fn activate_all_activates_every_host_that_needs_it() {
             6,
             &hm(desired),
         );
+        w.build(&hm_attr(name), &[(&hm(desired), 4096)]);
     }
-    home_host(&w, "web2", &hm('e'), &hm('e'));
+    home_host(&w, "web2", &hm('f'), &hm('f'));
+    w
+}
+
+#[test]
+fn activate_all_builds_at_once_then_activates_one_by_one() {
+    let w = fleet_world();
+    for name in ["web1", "web3"] {
+        w.build_awaits(&hm_attr(name), 2);
+    }
     let run = w.run(&["activate", "--all", "--yes"]);
     run.code(0);
-    assert!(run.stdout.contains("\n==> activating web1\n"), "{run}");
-    assert!(run.stdout.contains("\n==> activating web3\n"), "{run}");
-    assert!(!run.stdout.contains("activating web2"), "{run}");
+    let after_plan = run.stdout.split_once("\n\n==> building web1, web3\n");
+    let (_, after) = after_plan.unwrap_or_else(|| panic!("{run}"));
+    let built: Vec<_> = after.lines().take(2).collect();
+    assert!(
+        built
+            .iter()
+            .all(|l| l.starts_with("✓ web1 built (") || l.starts_with("✓ web3 built (")),
+        "{run}"
+    );
+    assert!(
+        after.ends_with(
+            "\n\n==> activating web1\n✓ web1 is up to date\n\
+             \n==> activating web3\n✓ web3 is up to date\n\
+             \n2 of 2 hosts up to date\n"
+        ),
+        "{run}"
+    );
+    assert!(!run.stdout.contains("web2:"), "web2 is up to date: {run}");
+    let builds = w.nix_calls("build --no-link");
+    assert_eq!(builds.len(), 2, "{}", w.log());
+    assert!(overlapping(&builds), "builds in parallel:\n{}", w.log());
+    // Both done before the first activation starts (and on the hosts: the
+    // fake nix only builds where the fake ssh runs it).
+    let activations: Vec<_> = w
+        .calls()
+        .into_iter()
+        .filter(|c| c.tool == "ssh" && c.remote_command().starts_with("sh /"))
+        .collect();
+    assert_eq!(activations.len(), 2, "{}", w.log());
+    assert!(
+        builds.iter().all(|b| b.end < Some(activations[0].start)),
+        "{}",
+        w.log()
+    );
+    assert!(
+        builds
+            .iter()
+            .all(|b| b.args.contains(" --accept-flake-config ")),
+        "{}",
+        w.log()
+    );
+}
+
+#[test]
+fn a_host_whose_build_fails_is_not_activated() {
+    let w = fleet_world();
+    std::fs::remove_file(
+        w.root()
+            .join("fake/builds")
+            .join("homeConfigurations.web1.activationPackage"),
+    )
+    .unwrap();
+    let run = w.run(&["activate", "--all", "--yes"]);
+    run.code(2);
+    assert!(
+        run.stdout.contains(
+            "\n✗ web1: build failed, not activating it: fake-nix can't build \
+             homeConfigurations.web1.activationPackage\n  $ nix "
+        ),
+        "{run}"
+    );
+    assert!(!run.stdout.contains("activating web1"), "{run}");
+    assert!(
+        run.stdout
+            .ends_with("\n==> activating web3\n✓ web3 is up to date\n\n1 of 2 hosts up to date\n"),
+        "{run}"
+    );
+    assert_eq!(w.ssh_calls("web1").len(), 2, "probe, build: {}", w.log());
+}
+
+#[test]
+fn this_machine_builds_here_alongside_the_others() {
+    let w = World::new();
+    w.flake(REV1);
+    discover_home(&w, &["bigmem", "web1"]);
+    let switch =
+        "activate = 'ln -sfn home-manager-6-link \"$HOME/.local/state/nix/profiles/home-manager\"'";
+    w.config(&format!(
+        "self = \"bigmem\"\n[hosts.bigmem]\n{switch}\n[hosts.web1]\n{switch}\n"
+    ));
+    w.eval(&hm_attr("bigmem"), &hm('b'));
+    w.this_machine("bigmem")
+        .home_manager(5, &hm('a'))
+        .generation("~/.local/state/nix/profiles/home-manager", 6, &hm('b'));
+    home_host(&w, "web1", &hm('c'), &hm('d')).generation(
+        "~/.local/state/nix/profiles/home-manager",
+        6,
+        &hm('d'),
+    );
+    for (name, out) in [("bigmem", hm('b')), ("web1", hm('d'))] {
+        w.build(&hm_attr(name), &[(&out, 4096)]);
+        w.build_awaits(&hm_attr(name), 2);
+    }
+    let run = w.run(&["activate", "--all", "--yes"]);
+    run.code(0);
+    assert!(
+        run.stdout.contains("\n==> building bigmem, web1\n"),
+        "{run}"
+    );
     assert!(run.stdout.ends_with("\n2 of 2 hosts up to date\n"), "{run}");
+    assert!(overlapping(&w.nix_calls("build --no-link")), "{}", w.log());
+    assert!(w.ssh_calls("bigmem").is_empty(), "{}", w.log());
+}
+
+#[test]
+fn one_host_builds_as_it_activates() {
+    let w = fleet_world();
+    let run = w.run(&["activate", "--yes", "web1"]);
+    run.code(0);
+    assert!(!run.stdout.contains("building"), "{run}");
+    assert_eq!(w.nix_calls("build --no-link").len(), 0, "{}", w.log());
 }
 
 #[test]

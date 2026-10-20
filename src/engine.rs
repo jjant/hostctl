@@ -558,6 +558,43 @@ impl Engine {
             .await;
     }
 
+    /// Run `command`, an [`actions::build_command`] of `host`, without a
+    /// terminal where it runs (here when [`actions::runs_here`], else on
+    /// the host over the unattended channel): after [`remote::NIX_PRELUDE`],
+    /// with stdin from `/dev/null` and no timeout. On failure: nix's
+    /// innermost error (else why the run failed), with the command and
+    /// what nix said that isn't noise ([`nix::clean_stderr`]).
+    pub async fn build(&self, host: &Host, command: &str) -> Result<(), ErrorInfo> {
+        let here = Target::Local { assumed: false };
+        let target = if actions::runs_here(host) {
+            &here
+        } else {
+            &host.target
+        };
+        let script = format!("{}\n{command} </dev/null\n", remote::NIX_PRELUDE);
+        let attempt = self
+            .run_on(target, None, |ssh, mux| {
+                (remote::script_command(target, ssh, mux, &script), ())
+            })
+            .await;
+        let out = attempt.result.map_err(|error| {
+            ErrorInfo::msg(match target {
+                Target::Ssh(_) => self.ssh_spawn_message(&error),
+                Target::Local { .. } => format!("couldn't run {}: {error}", attempt.spec.program),
+            })
+        })?;
+        if out.success() {
+            return Ok(());
+        }
+        let stderr = nix::clean_stderr(&clean_ssh_stderr(&out.stderr));
+        let why = failure_reason(&out, &stderr, None, target);
+        let hint = self.ssh_hint_for(target, &out.stderr);
+        Err(ErrorInfo::new(
+            nix::error_summary(&stderr, &why),
+            command_detail(command, &stderr, hint.as_deref()),
+        ))
+    }
+
     /// Write the cache now (e.g. on quit or interrupt); errors are ignored.
     pub fn save_cache(&self) {
         self.inner.save_cache();
@@ -1942,7 +1979,12 @@ fn nix_detail(spec: &CommandSpec, stderr: &str) -> String {
 /// An error's detail: `$ <command>`, the cleaned stderr (its end, when
 /// long), then `hint: …`.
 fn detail(spec: &CommandSpec, stderr: &str, hint: Option<&str>) -> String {
-    let mut out = format!("$ {}", spec.display());
+    command_detail(&spec.display(), stderr, hint)
+}
+
+/// [`detail`] for a command line already written out.
+fn command_detail(command: &str, stderr: &str, hint: Option<&str>) -> String {
+    let mut out = format!("$ {command}");
     let stderr = stderr.trim();
     if !stderr.is_empty() {
         out.push('\n');

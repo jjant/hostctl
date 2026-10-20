@@ -721,6 +721,16 @@ impl World {
         );
     }
 
+    /// The build of `attr` waits until `n` builds have started.
+    pub fn build_awaits(&self, attr: &str, n: usize) {
+        write(
+            self.fake
+                .join("builds")
+                .join(format!("{}.await", key(attr))),
+            n.to_string(),
+        );
+    }
+
     /// This machine's store has `closure`, the closure of its first path.
     pub fn local_closure(&self, closure: &[(&str, u64)]) {
         write(

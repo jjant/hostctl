@@ -311,6 +311,17 @@ pub(crate) async fn wait_for<F: Future>(
     work: F,
     signals: &mut Signals,
 ) -> Option<F::Output> {
+    wait_for_since(label, Instant::now(), work, signals).await
+}
+
+/// [`wait_for`], timing from `start`: a wait that goes on from an earlier
+/// one, whose spinner is back at once if that one's was up.
+pub(crate) async fn wait_for_since<F: Future>(
+    label: &str,
+    start: Instant,
+    work: F,
+    signals: &mut Signals,
+) -> Option<F::Output> {
     let spin = drawable(&io::stderr());
     let interrupt = async {
         loop {
@@ -325,20 +336,21 @@ pub(crate) async fn wait_for<F: Future>(
             }
         }
     };
-    wait_until(label, work, interrupt, spin).await
+    wait_until(label, start, work, interrupt, spin).await
 }
 
-/// [`wait_for`] with any `interrupt`; the spinner only with `spin`.
+/// [`wait_for_since`] with any `interrupt`; the spinner only with `spin`.
 async fn wait_until<F: Future>(
     label: &str,
+    start: Instant,
     work: F,
     interrupt: impl Future<Output = ()>,
     spin: bool,
 ) -> Option<F::Output> {
     let mut work = std::pin::pin!(work);
     let mut interrupt = std::pin::pin!(interrupt);
-    let start = Instant::now();
-    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + SPINNER_DELAY, TICK);
+    let delay = SPINNER_DELAY.saturating_sub(start.elapsed());
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + delay, TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut frame = 0;
     let mut shown = false;
@@ -1550,7 +1562,10 @@ mod tests {
             7
         };
         let never = std::future::pending();
-        assert_eq!(wait_until("x", work, never, false).await, Some(7));
+        assert_eq!(
+            wait_until("x", Instant::now(), work, never, false).await,
+            Some(7)
+        );
 
         // The interrupt wins, and the work is dropped (cancelled).
         let dropped = Rc::new(Cell::new(false));
@@ -1566,7 +1581,10 @@ mod tests {
             std::future::pending::<()>().await;
         };
         let interrupt = tokio::time::sleep(Duration::from_secs(1));
-        assert_eq!(wait_until("x", work, interrupt, false).await, None);
+        assert_eq!(
+            wait_until("x", Instant::now(), work, interrupt, false).await,
+            None
+        );
         assert!(dropped.get());
     }
 
