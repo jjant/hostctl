@@ -2437,7 +2437,7 @@ update: hostctl activate al2-aarch64 al2-x86_64
             aarch64["activate"]["command"],
             format!(
                 "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link \
-                 --print-out-paths '{}'#.homeConfigurations.al2-aarch64.activationPackage) && \
+                 --print-out-paths --accept-flake-config '{}'#.homeConfigurations.al2-aarch64.activationPackage) && \
                  [ \"$out\" = {HM_9} ] && \"$out/activate\"",
                 github().locked
             )

@@ -205,16 +205,19 @@ fn warning(host: &Host, flake: &FlakeInfo) -> Option<String> {
 /// The command that builds (or fetches) `host`'s desired generation on its
 /// target without activating it — `nix --extra-experimental-features
 /// 'nix-command flakes' build --no-link --print-out-paths
-/// --no-write-lock-file '<locked>#.<attr>'` — or why it can't (forced-command
-/// route; non-fetchable flake on a remote target). Run interactively, so
-/// progress is visible. Like activation, it runs here when [`runs_here`].
+/// --accept-flake-config --no-write-lock-file '<locked>#.<attr>'` — or why
+/// it can't (forced-command route; non-fetchable flake on a remote target).
+/// Run interactively, so progress is visible, and with the flake's
+/// `nixConfig` accepted, so nix doesn't ask about each setting (the
+/// generation it builds is the flake's to run anyway). Like activation, it
+/// runs here when [`runs_here`].
 pub fn build_command(host: &Host, flake: &FlakeInfo) -> Result<String, String> {
     if !runs_here(host) {
         remote_obstacle(host, flake)?;
     }
     let [option, features] = FEATURES;
     Ok(format!(
-        "nix {} {} build --no-link --print-out-paths --no-write-lock-file {}",
+        "nix {} {} build --no-link --print-out-paths --accept-flake-config --no-write-lock-file {}",
         sh_quote(option),
         sh_quote(features),
         sh_quote(&format!("{}#.{}", flake.locked, host.attr)),
@@ -570,7 +573,7 @@ mod tests {
             Activation {
                 command: format!(
                     "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link \
-                     --print-out-paths '{GITHUB_LOCKED}'#.homeConfigurations.bigmem.activationPackage) \
+                     --print-out-paths --accept-flake-config '{GITHUB_LOCKED}'#.homeConfigurations.bigmem.activationPackage) \
                      && [ \"$out\" = {DESIRED} ] && \"$out/activate\""
                 ),
                 runs_on: RunsOn::Here,
@@ -788,7 +791,7 @@ mod tests {
             build_command(&bigmem, &github()).unwrap(),
             format!(
                 "nix --extra-experimental-features 'nix-command flakes' build --no-link \
-                 --print-out-paths --no-write-lock-file \
+                 --print-out-paths --accept-flake-config --no-write-lock-file \
                  '{GITHUB_LOCKED}#.homeConfigurations.bigmem.activationPackage'"
             )
         );
@@ -1838,6 +1841,7 @@ esac
                     "build",
                     "--no-link",
                     "--print-out-paths",
+                    "--accept-flake-config",
                     &format!("{GITHUB_LOCKED}#.homeConfigurations.\"jj@mac\".activationPackage"),
                 ],
                 "{}",
@@ -1879,6 +1883,7 @@ esac
                     "build",
                     "--no-link",
                     "--print-out-paths",
+                    "--accept-flake-config",
                     "--no-write-lock-file",
                     &format!(
                         "{}#.homeConfigurations.\"jj@mac\".activationPackage",

@@ -18,7 +18,7 @@ expression: json
   "hosts": [
     {
       "activate": {
-        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
+        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths --accept-flake-config 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-aarch64.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
         "runsOn": "remote"
       },
       "activated": 1781709200,
@@ -55,7 +55,7 @@ expression: json
     },
     {
       "activate": {
-        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-x86_64.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
+        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths --accept-flake-config 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.al2-x86_64.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
         "runsOn": "remote"
       },
       "activated": null,
@@ -112,7 +112,7 @@ expression: json
     },
     {
       "activate": {
-        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.bigmem.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
+        "command": "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths --accept-flake-config 'github:jjant/nix-config/42ea902131b93c04d098d3bcd02f29305b4bad7c?narHash=sha256-rTwky4CPWade4oeZ81h5PcDt8%2Be8kXznGgaiDqYFhFk%3D'#.homeConfigurations.bigmem.activationPackage) && [ \"$out\" = /nix/store/ykn4vz9vpqccp1n36p50irs3dwrjfkk6-home-manager-generation ] && \"$out/activate\"",
         "runsOn": "here"
       },
       "activated": 1792249280,

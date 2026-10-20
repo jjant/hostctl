@@ -326,7 +326,7 @@ even with `--impure` in `nix.options`), cached by flake identity.
    concurrently the local store is asked for the desired one.
 2. If the desired generation exists nowhere, the user may build/fetch it **on the
    target** (interactive, progress visible, never activates:
-   `nix build --no-link --print-out-paths {flake}#.<attr>`), then diff.
+   `nix build --no-link --print-out-paths --accept-flake-config {flake}#.<attr>`), then diff.
 3. Grouping/semantics match `nix store diff-closures` (validated against real
    fixtures); versions classified with Nix's `compareVersions`.
 
@@ -337,12 +337,12 @@ Forced-command routes: diff only from the local store.
 Per-host `activate` template + `activate-on` (`target`, default: run on the host;
 `local`: run here, for push tools). Defaults (all use `{flake}`):
 
-| kind           | default `activate`                                                                                                                                                                                                       |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `nixos`        | `/run/current-system/sw/bin/nixos-rebuild switch --flake {flake}#{name} --sudo`                                                                                                                                          |
-| `darwin`       | `sudo /run/current-system/sw/bin/darwin-rebuild switch --flake {flake}#{name}`                                                                                                                                           |
-| `home-manager` | `out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths {flake}#.{attr}) && [ "$out" = {out} ] && "$out/activate"` (no CLI needed; refuses anything but the compared generation) |
-| `custom`       | none                                                                                                                                                                                                                     |
+| kind           | default `activate`                                                                                                                                                                                                                             |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nixos`        | `/run/current-system/sw/bin/nixos-rebuild switch --flake {flake}#{name} --sudo`                                                                                                                                                                |
+| `darwin`       | `sudo /run/current-system/sw/bin/darwin-rebuild switch --flake {flake}#{name}`                                                                                                                                                                 |
+| `home-manager` | `out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths --accept-flake-config {flake}#.{attr}) && [ "$out" = {out} ] && "$out/activate"` (no CLI needed; refuses anything but the compared generation) |
+| `custom`       | none                                                                                                                                                                                                                                           |
 
 Placeholders (values shell-quoted): `{flake}` locked URL, `{flake_url}` as
 configured, `{rev}`, `{name}`, `{attr}`, `{out}` desired store path,

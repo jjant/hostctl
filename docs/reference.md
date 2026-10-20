@@ -197,8 +197,11 @@ Activation templates are plain shell with these placeholders, substituted
 shell-quoted: `{flake}` (the locked URL that was compared), `{flake_url}` (as
 configured), `{rev}`, `{name}`, `{attr}`, `{out}` (the desired store path),
 `{destination}` and `{ssh_host}`. Every default uses `{flake}`, so activating
-produces exactly the generation that was compared. Flakes with an `activate`
-app can use `activate = "nix run {flake}#activate"`.
+produces exactly the generation that was compared. hostctl's own builds
+(home-manager's default, `diff --build`) pass `--accept-flake-config`, so the
+flake's `nixConfig` (say, its binary cache) applies without nix asking about
+each setting. Flakes with an `activate` app can use `activate = "nix run
+{flake}#activate"`.
 
 The local machine: `self` / `--self` if set; otherwise the host whose
 destination or `hostnames` match this machine's hostname (a dot-less name

@@ -69,7 +69,8 @@ impl Kind {
 
     /// The activation template (see [`crate::actions::expand`]). Every
     /// default uses `{flake}` (the compared locked URL) so that activating
-    /// produces exactly the compared generation.
+    /// produces exactly the compared generation. home-manager's accepts the
+    /// flake's `nixConfig`, like [`crate::actions::build_command`].
     pub fn default_activate(self) -> Option<&'static str> {
         match self {
             Kind::Nixos => Some(
@@ -80,7 +81,7 @@ impl Kind {
             }
             Kind::HomeManager => Some(
                 "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link \
-                 --print-out-paths {flake}#.{attr}) && [ \"$out\" = {out} ] && \"$out/activate\"",
+                 --print-out-paths --accept-flake-config {flake}#.{attr}) && [ \"$out\" = {out} ] && \"$out/activate\"",
             ),
             Kind::Custom => None,
         }

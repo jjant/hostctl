@@ -840,7 +840,7 @@ fn the_json_report_has_every_field() {
         json!({
             "command": format!(
                 "out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link \
-                 --print-out-paths '{locked}'#.homeConfigurations.web1.activationPackage) && \
+                 --print-out-paths --accept-flake-config '{locked}'#.homeConfigurations.web1.activationPackage) && \
                  [ \"$out\" = {} ] && \"$out/activate\"",
                 hm('a')
             ),
@@ -1866,7 +1866,7 @@ fn diff_build_builds_the_new_generation_on_the_host_first() {
     w.build(&hm_attr("web1"), &borrowed(&new));
     let command = format!(
         "nix --extra-experimental-features 'nix-command flakes' build --no-link \
-         --print-out-paths --no-write-lock-file '{}#.homeConfigurations.web1.activationPackage'",
+         --print-out-paths --accept-flake-config --no-write-lock-file '{}#.homeConfigurations.web1.activationPackage'",
         World::locked(FLAKE, REV1)
     );
     let run = w.run(&["diff", "web1", "--build", "--json"]);
