@@ -40,7 +40,7 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../Cargo.lock;
 
   # Test with the test profile: overflow checks and debug assertions on, and
-  # no single-threaded fat-LTO link per test binary (92 s → 25 s here).
+  # no LTO link per test binary.
   checkType = "debug";
 
   nativeBuildInputs = [ installShellFiles ];
